@@ -1,6 +1,7 @@
 import streamlit as st
 from cv_analyzer_backend import CVAnalyzer
 import json
+from io import BytesIO
 
 # Page config
 st.set_page_config(
@@ -196,7 +197,7 @@ with st.sidebar:
     # Output format (ALREADY EXISTS)
     output_format = st.radio(
         t['output_format'],
-        ["PDF", "DOCX", "JSON"],
+        ["PDF", "DOCX"],
         index=0
     )
     
@@ -512,9 +513,13 @@ with col_download:
         st.caption(f"Szablon: {template_type.upper()}")
         
         if output_format == "PDF":
+    # Ustaw język na podstawie wybranego guzika
+            pdf_language = 'pl' if "Polski" in st.session_state.get('language_choice', 'English') else 'en'
+            
             pdf_buffer = analyzer.generate_pdf_output(
                 st.session_state.analysis_result,
-                template_type=template_type  # ← MAKE SURE THIS IS HERE
+                template_type=template_type,
+                language=pdf_language  # ← DODAJ TEN WIERSZ!
             )
             st.download_button(
                 label=t['download_pdf'],
@@ -524,31 +529,20 @@ with col_download:
                 use_container_width=True
             )
         elif output_format == "DOCX":
-            docx_buffer = analyzer.generate_docx_output(
-                st.session_state.analysis_result,
-                template_type=template_type  # ← MAKE SURE THIS IS HERE
-            )
-            st.download_button(
-                label=t['download_docx'],
-                data=docx_buffer,
-                file_name=f"cv_analysis_{template_type}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True
-            )
-        else:  # JSON
-            # Apply filter for JSON too
-            filtered_json = analyzer.apply_template_filters(
-                st.session_state.analysis_result,
-                template_type
-            )
-            json_str = json.dumps(filtered_json, ensure_ascii=False, indent=2)
-            st.download_button(
-                label=t['download_json'],
-                data=json_str,
-                file_name=f"cv_analysis_{template_type}.json",
-                mime="application/json",
-                use_container_width=True
-            )
+            docx_buffer = analyzer.generate_docx_output(st.session_state.analysis_result)
+            if docx_buffer and isinstance(docx_buffer, BytesIO):
+                st.download_button(
+                    label=t['download_docx'],
+                    data=docx_buffer.getvalue(),
+                    file_name="cv_analysis_report.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+            else:
+                st.error("❌ DOCX generation failed. Check backend logs.")
+            
+    
+            
 if st.session_state.analysis_result is not None:
     st.markdown("---")
     st.markdown('<div class="section-header">🤖 AI Assistant / Asystent AI</div>', unsafe_allow_html=True)

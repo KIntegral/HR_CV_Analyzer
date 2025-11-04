@@ -4,19 +4,40 @@ import pytesseract
 import ollama
 import json
 import os
-from docx import Document
+
+from docx.oxml import parse_xml
+from fpdf import FPDF
+
+from PIL import Image
+import numpy as np
+from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
-from io import BytesIO
+
+from docx.shared import Pt, RGBColor, Inches
+from docx.enum.section import WD_SECTION
 
 from reportlab.lib.enums import TA_LEFT
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+
+from docx import Document
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+import os
 # Dla Windows odkomentuj:
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
@@ -194,7 +215,7 @@ class CVAnalyzer:
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def apply_template_filters(self, analysis, template_type):
+    def apply_template_filters(self, analysis, template_type='full'):
         """
         Apply template filters to analysis data
         template_type: 'full', 'short', 'anonymous', 'extended'
@@ -268,7 +289,7 @@ class CVAnalyzer:
                     }
         
         # 'full' - zwraca wszystko bez zmian
-        
+        filtered['key_highlights'] = self.extract_key_highlights(filtered)
         return filtered
 
     def spell_check_cv(self, cv_text, language='auto'):
@@ -314,8 +335,8 @@ class CVAnalyzer:
             return f"Error: {str(e)}"
 
     def _create_polish_prompt(self, cv_text, client_requirements, needs_translation=False, source_lang='polish'):
-        """Prompt for Polish output with enhanced candidate strengths analysis"""
-        prompt = "Jestes ekspertem HR specjalizujacym sie w analizie CV i dopasowywaniu kandydatow do wymaган.\n\n"
+        """Polish prompt - complete with all fields populated"""
+        prompt = "Jestes ekspertem HR specjalizujacym sie w analizie CV.\n\n"
         
         if needs_translation:
             prompt += f"WAZNE: CV jest napisane po {self._get_language_name(source_lang, 'pl')}. "
@@ -324,167 +345,383 @@ class CVAnalyzer:
         prompt += "TRESC CV KANDYDATA:\n" + cv_text + "\n\n"
         prompt += "WYMAGANIA KLIENTA:\n" + client_requirements + "\n\n"
         
-        prompt += "ZADANIE: Przeprowadz dokladna analize CV i wymaган klienta.\n\n"
-        
-        prompt += "Wygeneruj szczegolowy raport w formacie JSON PO POLSKU:\n"
+        prompt += "Wygeneruj szczegolowy raport w formacie JSON PO POLSKU. WSZYSTKIE pola ponizej MUSZA byc wypelnione!\n"
         prompt += '{\n'
-        prompt += '  "podstawowe_dane": {"imie_nazwisko": "", "email": "", "telefon": ""},\n'
+        
+        prompt += '  "podstawowe_dane": {\n'
+        prompt += '    "imie_nazwisko": "Wyciagnij z CV",\n'
+        prompt += '    "email": "Email z CV lub: nie podano",\n'
+        prompt += '    "telefon": "Telefon z CV lub: nie podano"\n'
+        prompt += '  },\n'
+        
         prompt += '  "lokalizacja_i_dostepnosc": {\n'
-        prompt += '    "lokalizacja": "miasto, kraj lub nieokreslona w CV",\n'
-        prompt += '    "preferencja_pracy_zdalnej": "zdalna/hybrydowa/stacjonarna/elastyczna lub nieokreslona w CV",\n'
-        prompt += '    "dostepnosc": "od kiedy dostepny lub nieokreslona w CV"\n'
+        prompt += '    "lokalizacja": "Miasto/Kraj z CV",\n'
+        prompt += '    "preferencja_pracy_zdalnej": "Zdalna/Hybrydowa/Stacjonarna lub: nieokreslona",\n'
+        prompt += '    "dostepnosc": "Okres wypowiedzenia lub: nieokreslona"\n'
         prompt += '  },\n'
-        prompt += '  "krotki_opis_kandydata": "2-3 zdania podsumowujace profil, specjalizacje i kluczowe osiagniecia",\n'
-        prompt += '  "stack_technologiczny": {\n'
-        prompt += '    "jezyki_programowania": ["lista"],\n'
-        prompt += '    "frameworki": ["lista"],\n'
-        prompt += '    "bazy_danych": ["lista"],\n'
-        prompt += '    "narzedzia": ["lista"],\n'
-        prompt += '    "inne_technologie": ["lista"]\n'
-        prompt += '  },\n'
+        
+        prompt += '  "podsumowanie_profilu": "WAZNE: Napisz WLASNA analize 3-5 zdan (nie kopiuj z CV!). Uwzglednij: doswiadczenie, kompetencje, dopasowanie do wymagan, rekomendacje (polecam/nie polecam).",\n'
+        
         prompt += '  "doswiadczenie_zawodowe": [\n'
         prompt += '    {\n'
-        prompt += '      "nazwa_firmy": "",\n'
-        prompt += '      "stanowisko": "",\n'
-        prompt += '      "daty": "MM/RRRR - MM/RRRR",\n'
-        prompt += '      "opis_projektu": "opis projektow i obszarow odpowiedzialnosci",\n'
-        prompt += '      "zadania": ["konkretne zadania i osiagniecia z metrykami jesli dostepne"],\n'
-        prompt += '      "stos_technologiczny": ["technologie"]\n'
+        prompt += '      "okres": "YYYY - YYYY lub YYYY - Obecnie",\n'
+        prompt += '      "firma": "Nazwa firmy",\n'
+        prompt += '      "stanowisko": "Stanowisko",\n'
+        prompt += '      "kluczowe_osiagniecia": ["Lista osiagniec"],\n'
+        prompt += '      "obowiazki": ["Obowiazki"],\n'
+        prompt += '      "technologie": ["Technologie uzywane"]\n'
         prompt += '    }\n'
         prompt += '  ],\n'
-        prompt += '  "edukacja": [{"uczelnia": "", "kierunek": "", "stopien": "", "daty": ""}],\n'
-        prompt += '  "certyfikaty": [{"nazwa": "", "wystawca": "", "data": ""}],\n'
-        prompt += '  "znajomosc_jezykow": [{"jezyk": "", "poziom": "A1/A2/B1/B2/C1/C2/native"}],\n'
+        
+        prompt += '  "wyksztalcenie": [\n'
+        prompt += '    {\n'
+        prompt += '      "uczelnia": "Nazwa uczelni",\n'
+        prompt += '      "stopien": "Licencjat/Magister/Doktor",\n'
+        prompt += '      "kierunek": "Kierunek studiow",\n'
+        prompt += '      "okres": "YYYY - YYYY"\n'
+        prompt += '    }\n'
+        prompt += '  ],\n'
+        
+        prompt += '  "certyfikaty_i_kursy": [\n'
+        prompt += '    {\n'
+        prompt += '      "nazwa": "Nazwa certyfikatu/kursu",\n'
+        prompt += '      "typ": "certyfikat lub kurs",\n'
+        prompt += '      "wystawca": "Organizacja/Platforma",\n'
+        prompt += '      "data": "Rok uzyskania"\n'
+        prompt += '    }\n'
+        prompt += '  ],\n'
+        
+        prompt += '  "jezyki_obce": [\n'
+        prompt += '    {"jezyk": "Nazwa jezyka", "poziom": "A1/A2/B1/B2/C1/C2/Ojczysty"}\n'
+        prompt += '  ],\n'
+        prompt += '  "INSTRUKCJA_JEZYKI": "OBOWIAZKOWE! Szukaj wszystkich jezykow w CV. Zawsze dodaj jezyk ojczysty (Polski - Ojczysty jesli CV po polsku). Nie pomijaj!",\n'
+        
+        prompt += '  "umiejetnosci": {\n'
+        prompt += '    "programowanie_skrypty": ["OBOWIAZKOWE! Wyciagnij WSZYSTKIE jezyki programowania z CV: Python, Java, C#, JavaScript, TypeScript, C++, Go, Ruby, PHP, Swift, Kotlin, Bash, PowerShell, itp."],\n'
+        prompt += '    "frameworki_biblioteki": ["Wyciagnij frameworki/biblioteki wymienione w CV: Django, Flask, FastAPI, Spring, Express, NestJS, React, Angular, Vue, PyTorch, TensorFlow, Keras, Pandas, NumPy, Scikit-learn, H2O.ai, itp."],\n'
+        prompt += '    "infrastruktura_devops": ["Docker, Kubernetes, Jenkins, GitLab CI, GitHub Actions, CircleCI, Git, Terraform, Ansible, Puppet, Chef, itp."],\n'
+        prompt += '    "chmura": ["AWS, EC2, S3, Lambda, RDS, Azure, Virtual Machines, Blob Storage, Azure Functions, GCP, itp. - jesli brak: []"],\n'
+        prompt += '    "bazy_kolejki": ["PostgreSQL, MySQL, MongoDB, Cassandra, Redis, Memcached, Kafka, RabbitMQ, Elasticsearch, Solr, itp."],\n'
+        prompt += '    "monitoring": ["Prometheus, Grafana, Datadog, New Relic, ELK Stack, Kibana, Splunk, Fluentd, itp. - jesli brak: []"],\n'
+        prompt += '    "inne": ["Agile, Scrum, Kanban, REST API, GraphQL, gRPC, OAuth, JWT, SAML, Linux, Nginx, Apache, SSL/TLS, itp."]\n'
+        prompt += '  },\n'
+        prompt += '  "INSTRUKCJA_SKILLS": "KRYTYCZNE! Szukaj KAZDEJ technologii w CV - nie pomijaj nic! Wymieniane sa w Skills, Work Experience, Projects. Wyciagaj tylko to co faktycznie jest w CV - NIGDY nie dodawaj udomyslonych!",\n'
+        
+        prompt += '  "podsumowanie_technologii": {\n'
+        prompt += '    "opis": "Krotkie podsumowanie glownych technologii kandydata",\n'
+        prompt += '    "glowne_technologie": ["8-10 najwazniejszych technologii"],\n'
+        prompt += '    "lata_doswiadczenia": "X lat doswiadczenia w IT"\n'
+        prompt += '  },\n'
+        
         prompt += '  "dopasowanie_do_wymagan": {\n'
-        prompt += '    "mocne_strony": [\n'
-        prompt += '      "Minimum 5-7 punktow opisujacych kluczowe mocne strony kandydata:",\n'
-        prompt += '      "- Umiejetnosci techniczne (np. ekspertyza w Python, ML, frameworki)",\n'
-        prompt += '      "- Konkretne osiagniecia zawodowe z metrykami jesli sa dostepne",\n'
-        prompt += '      "- Doswiadczenie w zarzadzaniu projektami lub zespolami",\n'
-        prompt += '      "- Unikalny wplyw i rezultaty biznesowe",\n'
-        prompt += '      "- Umiejetnosci miekkie (komunikacja, praca zespolowa, inicjatywa)",\n'
-        prompt += '      "- Specjalistyczna wiedza lub niszowe kompetencje"\n'
-        prompt += '    ],\n'
-        prompt += '    "mapowanie_wymagan": [\n'
-        prompt += '      {\n'
-        prompt += '        "wymaganie": "Konkretne wymaganie z listy klienta",\n'
-        prompt += '        "status": "spelnione/czesciowo spelnione/niespelnione",\n'
-        prompt += '        "dowod_z_cv": "Konkretny fragment lub fakt z CV potwierdzajacy",\n'
-        prompt += '        "poziom_pewnosci": "wysoki/sredni/niski",\n'
-        prompt += '        "komentarz": "Dodatkowy komentarz lub kontekst"\n'
-        prompt += '      }\n'
-        prompt += '    ],\n'
-        prompt += '    "analiza_jakosciowa": {\n'
-        prompt += '      "zlozona_projektow": "wysoki/sredni/niski - ocena trudnosci i wplywu projektow",\n'
-        prompt += '      "przywodztwo": "wysoki/sredni/niski - czy kandydat wykazywal inicjatywe i przywodztwo",\n'
-        prompt += '      "transferowalnosc_umiejetnosci": "wysoki/sredni/niski - jak dobrze doswiadczenie pasuje do wymaган"\n'
-        prompt += '    },\n'
+        prompt += '    "mocne_strony": ["Minimum 3 mocne strony"],\n'
         prompt += '    "poziom_dopasowania": "wysoki/sredni/niski",\n'
-        prompt += '    "uzasadnienie": "Szczegolowe uzasadnienie oceny dopasowania (3-5 zdan) z odnieseniem do konkretnych wymagan i mocnych stron",\n'
-        prompt += '    "rekomendacja": "TAK/NIE",\n'
-        prompt += '    "kluczowe_czynniki": [\n'
-        prompt += '      "Lista 3-5 najwazniejszych czynnikow wplywajacych na decyzje"\n'
-        prompt += '    ]\n'
+        prompt += '    "uzasadnienie": "Szczegolowe uzasadnienie",\n'
+        prompt += '    "rekomendacja": "TAK/NIE"\n'
         prompt += '  }\n'
         prompt += '}\n\n'
         
-        prompt += "WAZNE ZASADY:\n"
-        prompt += "1. Wszystkie teksty MUSZA byc po polsku!\n"
-        prompt += "2. Dla mocnych stron - podaj minimum 5-7 konkretnych, wartosciowych punktow\n"
-        prompt += "3. W mapowaniu wymagan - przeanalizuj KAZDE wymaganie klienta osobno\n"
-        prompt += "4. W dowodach z CV - cytuj konkretne fakty, nie ogolniki\n"
-        prompt += "5. Uzasadnienie powinno byc szczegolowe i odnosic sie do konkretnych wymagan\n"
-        prompt += "6. Jesli czegos nie ma w CV, napisz 'nieokreslona w CV'\n"
-        prompt += "7. Odpowiedz MUSI byc poprawnym JSON\n"
+        prompt += "ULTRA-KRYTYCZNE INSTRUKCJE:\n"
+        prompt += "1. JEZYKI: Szukaj KAZDEGO jezyka wymienionego. Zawsze dodaj jezyk ojczysty!\n"
+        prompt += "2. SKILLS: Wyciagnij WSZYSTKIE technologie z CV - nie pomijaj zadnej!\n"
+        prompt += "3. CERTYFIKATY: Szukaj certyfikatow, kursow, szkolen - wszystko!\n"
+        prompt += "4. TYLKO Z CV: Wyciagaj TYLKO co jest napisane - bez inferowania!\n"
+        prompt += "5. ZWROC JSON: Poprawny JSON z WSZYSTKIMI polami wypelnionymi!\n"
         
         return prompt
 
     
     def _create_english_prompt(self, cv_text, client_requirements, needs_translation=False, source_lang='english'):
-        """Prompt for English output with enhanced candidate strengths analysis"""
-        prompt = "You are an HR expert specializing in CV analysis and candidate-requirement matching.\n\n"
+        """Updated English prompt - full anti-hallucination version"""
+        prompt = "You are an expert HR professional specializing in CV analysis.\n\n"
         
         if needs_translation:
-            prompt += f"IMPORTANT: The CV is written in {self._get_language_name(source_lang, 'en')}. "
-            prompt += "Analyze it and generate a report IN ENGLISH, translating all information.\n\n"
+            prompt += f"IMPORTANT: CV is written in {self._get_language_name(source_lang, 'en')}. "
+            prompt += "Analyze it and generate a comprehensive report IN ENGLISH, translating all information.\n\n"
         
-        prompt += "CANDIDATE CV CONTENT:\n" + cv_text + "\n\n"
+        prompt += "CV TEXT:\n" + cv_text + "\n\n"
         prompt += "CLIENT REQUIREMENTS:\n" + client_requirements + "\n\n"
         
-        prompt += "TASK: Perform a thorough analysis of the CV against client requirements.\n\n"
-        
-        prompt += "Generate a detailed report in JSON format IN ENGLISH:\n"
+        prompt += "Generate a comprehensive report in JSON format IN ENGLISH:\n"
         prompt += '{\n'
-        prompt += '  "podstawowe_dane": {"imie_nazwisko": "", "email": "", "telefon": ""},\n'
-        prompt += '  "lokalizacja_i_dostepnosc": {\n'
-        prompt += '    "lokalizacja": "city, country or not specified in CV",\n'
-        prompt += '    "preferencja_pracy_zdalnej": "remote/hybrid/onsite/flexible or not specified in CV",\n'
-        prompt += '    "dostepnosc": "availability date or not specified in CV"\n'
+        
+        # Podstawowe dane
+        prompt += '  "basic_data": {\n'
+        prompt += '    "full_name": "Extract name and surname from CV",\n'
+        prompt += '    "email": "Email or: not provided",\n'
+        prompt += '    "phone": "Phone or: not provided"\n'
         prompt += '  },\n'
-        prompt += '  "krotki_opis_kandydata": "2-3 sentences summarizing profile, specializations and key achievements",\n'
-        prompt += '  "stack_technologiczny": {\n'
-        prompt += '    "jezyki_programowania": ["list"],\n'
-        prompt += '    "frameworki": ["list"],\n'
-        prompt += '    "bazy_danych": ["list"],\n'
-        prompt += '    "narzedzia": ["list"],\n'
-        prompt += '    "inne_technologie": ["list"]\n'
+        
+        # Location
+        prompt += '  "location_and_availability": {\n'
+        prompt += '    "location": "City/Country from CV",\n'
+        prompt += '    "remote_work_preference": "Remote/Hybrid/On-site or: not specified",\n'
+        prompt += '    "availability": "Notice period or: not specified"\n'
         prompt += '  },\n'
-        prompt += '  "doswiadczenie_zawodowe": [\n'
+        
+        # Profile summary
+        prompt += '  "profile_summary": "IMPORTANT: Write YOUR OWN analysis (3-5 sentences), do NOT copy from CV. Include: experience, competencies, match to requirements, recommendation (recommend/do not recommend)",\n'
+        
+        # Work experience
+        prompt += '  "work_experience": [\n'
         prompt += '    {\n'
-        prompt += '      "nazwa_firmy": "",\n'
-        prompt += '      "stanowisko": "",\n'
-        prompt += '      "daty": "MM/YYYY - MM/YYYY",\n'
-        prompt += '      "opis_projektu": "description of projects and areas of responsibility",\n'
-        prompt += '      "zadania": ["specific tasks and achievements with metrics if available"],\n'
-        prompt += '      "stos_technologiczny": ["technologies"]\n'
+        prompt += '      "period": "YYYY - YYYY or YYYY - Present",\n'
+        prompt += '      "company": "Company name",\n'
+        prompt += '      "position": "Position title",\n'
+        prompt += '      "key_achievements": ["List of achievements with specific numbers/results"],\n'
+        prompt += '      "responsibilities": ["Optional - detailed responsibilities"],\n'
+        prompt += '      "technologies": ["MANDATORY - technologies used in this period"]\n'
         prompt += '    }\n'
         prompt += '  ],\n'
-        prompt += '  "edukacja": [{"uczelnia": "", "kierunek": "", "stopien": "", "daty": ""}],\n'
-        prompt += '  "certyfikaty": [{"nazwa": "", "wystawca": "", "data": ""}],\n'
-        prompt += '  "znajomosc_jezykow": [{"jezyk": "", "poziom": "A1/A2/B1/B2/C1/C2/native"}],\n'
-        prompt += '  "dopasowanie_do_wymagan": {\n'
-        prompt += '    "mocne_strony": [\n'
-        prompt += '      "Minimum 5-7 points describing key candidate strengths:",\n'
-        prompt += '      "- Technical skills (e.g., Python expertise, ML, frameworks)",\n'
-        prompt += '      "- Concrete professional achievements with metrics if available",\n'
-        prompt += '      "- Project or team management experience",\n'
-        prompt += '      "- Unique impact and business results",\n'
-        prompt += '      "- Soft skills (communication, teamwork, initiative)",\n'
-        prompt += '      "- Specialized knowledge or niche competencies"\n'
-        prompt += '    ],\n'
-        prompt += '    "mapowanie_wymagan": [\n'
-        prompt += '      {\n'
-        prompt += '        "wymaganie": "Specific requirement from client list",\n'
-        prompt += '        "status": "met/partially met/not met",\n'
-        prompt += '        "dowod_z_cv": "Specific evidence from CV confirming this",\n'
-        prompt += '        "poziom_pewnosci": "high/medium/low",\n'
-        prompt += '        "komentarz": "Additional comment or context"\n'
-        prompt += '      }\n'
-        prompt += '    ],\n'
-        prompt += '    "analiza_jakosciowa": {\n'
-        prompt += '      "zlozona_projektow": "high/medium/low - assessment of project difficulty and impact",\n'
-        prompt += '      "przywodztwo": "high/medium/low - leadership and initiative shown",\n'
-        prompt += '      "transferowalnosc_umiejetnosci": "high/medium/low - how well experience matches requirements"\n'
-        prompt += '    },\n'
-        prompt += '    "poziom_dopasowania": "high/medium/low",\n'
-        prompt += '    "uzasadnienie": "Detailed justification of fit assessment (3-5 sentences) referencing specific requirements and strengths",\n'
-        prompt += '    "rekomendacja": "YES/NO",\n'
-        prompt += '    "kluczowe_czynniki": [\n'
-        prompt += '      "List of 3-5 most important factors influencing the decision"\n'
-        prompt += '    ]\n'
+        
+        # Education
+        prompt += '  "education": [\n'
+        prompt += '    {\n'
+        prompt += '      "institution": "University name",\n'
+        prompt += '      "degree": "Bachelor/Master/PhD",\n'
+        prompt += '      "field": "Field of study",\n'
+        prompt += '      "period": "YYYY - YYYY"\n'
+        prompt += '    }\n'
+        prompt += '  ],\n'
+        prompt += '  "NOTE_EDUCATION": "If no education, return [] - NEVER skip this section!",\n'
+        
+        # Certifications and Courses
+        prompt += '  "certifications_and_courses": [\n'
+        prompt += '    {\n'
+        prompt += '      "name": "Certification or course name",\n'
+        prompt += '      "type": "certification or course",\n'
+        prompt += '      "issuer": "Organization/Platform (AWS, Coursera, Udemy, edX)",\n'
+        prompt += '      "date": "Year"\n'
+        prompt += '    }\n'
+        prompt += '  ],\n'
+        prompt += '  "NOTE_CERTS": "Search for: professional certifications, online courses, training, workshops, bootcamps. If none, return []",\n'
+        
+        # Languages
+        prompt += '  "languages": [\n'
+        prompt += '    {"language": "Language name", "level": "A1/A2/B1/B2/C1/C2/Native"}\n'
+        prompt += '  ],\n'
+        prompt += '  "NOTE_LANGS": "ALWAYS add at least the native language. If CV is in English: add English - Native",\n'
+        
+        # Skills
+        prompt += '  "skills": {\n'
+        prompt += '    "programming_scripting": ["MANDATORY! Python, Java, C#, JavaScript, TypeScript, C++, Go, etc. NEVER empty!"],\n'
+        prompt += '    "frameworks_libraries": ["Django, Flask, React, Angular, Spring, PyTorch, TensorFlow, Pandas, etc."],\n'
+        prompt += '    "infrastructure_devops": ["Docker, Kubernetes, Git, Jenkins, GitLab CI, Terraform, Ansible, etc."],\n'
+        prompt += '    "cloud": ["AWS, Azure, GCP, EC2, S3, Lambda, etc. - if none: []"],\n'
+        prompt += '    "databases_messaging": ["PostgreSQL, MySQL, MongoDB, Redis, Kafka, RabbitMQ, Elasticsearch, etc."],\n'
+        prompt += '    "monitoring": ["Prometheus, Grafana, ELK Stack, Datadog, etc. - if none: []"],\n'
+        prompt += '    "other": ["Agile, Scrum, REST API, GraphQL, Linux, OAuth, JWT, etc."]\n'
+        prompt += '  },\n'
+        
+        # Tech stack summary
+        prompt += '  "tech_stack_summary": {\n'
+        prompt += '    "description": "Brief summary of candidate main technologies",\n'
+        prompt += '    "primary_technologies": ["Top 8-10 most important technologies"],\n'
+        prompt += '    "years_of_experience": "X years of IT experience"\n'
+        prompt += '  },\n'
+        
+        # Matching
+        prompt += '  "matching_to_requirements": {\n'
+        prompt += '    "strengths": ["At least 3 strengths related to requirements"],\n'
+        prompt += '    "match_level": "high/medium/low",\n'
+        prompt += '    "justification": "Detailed justification with specific examples",\n'
+        prompt += '    "recommendation": "YES - recommend for further process / NO - does not meet requirements"\n'
         prompt += '  }\n'
         prompt += '}\n\n'
         
-        prompt += "IMPORTANT RULES:\n"
-        prompt += "1. All text MUST be in English!\n"
-        prompt += "2. For strengths - provide minimum 5-7 specific, valuable points\n"
-        prompt += "3. In requirement mapping - analyze EACH client requirement separately\n"
-        prompt += "4. In CV evidence - cite specific facts, not generalities\n"
-        prompt += "5. Justification should be detailed and reference specific requirements\n"
-        prompt += "6. If something is missing from CV, write 'not specified in CV'\n"
-        prompt += "7. Response MUST be valid JSON\n"
+        prompt += "=" * 80 + "\n"
+        prompt += "ULTRA-CRITICAL: EXTRACTION RULES - ZERO HALLUCINATIONS!\n"
+        prompt += "=" * 80 + "\n"
+        prompt += "\n"
+        prompt += "MAIN RULE: Extract ONLY what is LITERALLY written in the CV!\n"
+        prompt += "\n"
+        prompt += "FORBIDDEN PRACTICES:\n"
+        prompt += "- DO NOT infer technologies based on context\n"
+        prompt += "- DO NOT add 'typical' technologies for a role\n"
+        prompt += "- DO NOT use examples from this prompt as real data\n"
+        prompt += "- DO NOT infer technologies from job title\n"
+        prompt += "- If technology is NOT mentioned in CV, DO NOT add it!\n"
+        prompt += "\n"
+        prompt += "EXAMPLES OF MISTAKES (WHAT NOT TO DO):\n"
+        prompt += "[ERROR 1] CV: 'Python' -> YOU ADD: Django, Flask (WRONG! Not in CV!)\n"
+        prompt += "[ERROR 2] CV: 'Backend Developer' -> YOU ADD: JavaScript, Node.js (WRONG!)\n"
+        prompt += "[ERROR 3] CV: 'ML Engineer' -> YOU ADD: TensorFlow, Keras (WRONG if not in CV!)\n"
+        prompt += "[ERROR 4] CV: 'Git' -> YOU ADD: GitHub, GitLab (WRONG! Only Git!)\n"
+        prompt += "\n"
+        prompt += "CORRECT APPROACH:\n"
+        prompt += "[CORRECT 1] CV: 'Python, Java, C#' -> YOU EXTRACT: ['Python', 'Java', 'C#']\n"
+        prompt += "[CORRECT 2] CV: 'PyTorch and H2O.ai' -> YOU EXTRACT: ['PyTorch', 'H2O.ai']\n"
+        prompt += "[CORRECT 3] CV: 'Git (good knowledge)' -> YOU EXTRACT: ['Git']\n"
+        prompt += "[CORRECT 4] CV: 'Bash' -> YOU EXTRACT: ['Bash'] (NOT Linux, NOT Shell!)\n"
+        prompt += "\n"
+        prompt += "SPECIFIC INSTRUCTIONS FOR SKILLS:\n"
+        prompt += "\n"
+        prompt += "1. Programming & Scripting:\n"
+        prompt += "   - Extract ONLY languages that are WRITTEN in CV\n"
+        prompt += "   - If CV says 'Python, Java, C#' -> ONLY these 3!\n"
+        prompt += "   - DO NOT add JavaScript if not in CV\n"
+        prompt += "\n"
+        prompt += "2. Frameworks & Libraries:\n"
+        prompt += "   - Extract ONLY frameworks/libraries MENTIONED in CV\n"
+        prompt += "   - DO NOT infer from languages (Python != Django automatically!)\n"
+        prompt += "   - If CV says 'PyTorch, H2O.ai' -> ONLY these!\n"
+        prompt += "\n"
+        prompt += "3. Infrastructure & DevOps:\n"
+        prompt += "   - Extract ONLY tools WRITTEN in CV\n"
+        prompt += "   - Git != GitHub/GitLab (different things!)\n"
+        prompt += "   - Docker != Kubernetes (don't add automatically!)\n"
+        prompt += "\n"
+        prompt += "VERIFICATION CHECKLIST BEFORE SUBMITTING:\n"
+        prompt += "- Is EVERY technology I listed actually in the CV text?\n"
+        prompt += "- Did I avoid adding 'common' technologies not mentioned?\n"
+        prompt += "- Did I extract EXACTLY what's written, not what 'should' be there?\n"
+        prompt += "- Did I double-check each item?\n"
+        prompt += "\n"
+        prompt += "IF IN DOUBT - DO NOT ADD!\n"
+        prompt += "Better to omit than to hallucinate!\n"
+        prompt += "\n"
         
         return prompt
+    def translate_analysis_dict(analysis_dict, language="pl"):
+        """Translate entire analysis dictionary to target language using LLM"""
+        if language == "en":
+            return analysis_dict  # No translation needed
+        
+        try:
+            # Konwertuj dict do JSON string
+            analysis_json = json.dumps(analysis_dict, ensure_ascii=False, indent=2)
+            
+            prompt = f"""Translate the following CV analysis from English to Polish.
+    Keep all JSON structure intact. Keep names, dates, and technical terms unchanged.
+    Only translate the text values.
+
+    JSON to translate:
+    {analysis_json}
+
+    Respond ONLY with valid JSON, no other text."""
+            
+            response = ollama.generate(
+                model="mistral",
+                prompt=prompt,
+                stream=False,
+                temperature=0.1  # Low temperature for consistency
+            )
+            
+            translated_text = response['response'].strip()
+            
+            # Spróbuj parsować JSON
+            translated_dict = json.loads(translated_text)
+            return translated_dict
+            
+        except Exception as e:
+            print(f"Translation error: {e}")
+            return analysis_dict  # Return original if translation fails
+
+
+    def extract_key_highlights(self, analysis):
+        """Extract REAL strengths with metrics and achievements"""
+        highlights = []
+        
+        try:
+            # 1. GŁOWNE STANOWISKO Z KONKRETNYMI DATAMI
+            work_exp_data = analysis.get("doswiadczenie_zawodowe") or analysis.get("work_experience", [])
+            
+            if work_exp_data:
+                job = work_exp_data[0]
+                period = job.get("okres") or job.get("period", "")
+                company = job.get("firma") or job.get("company", "")
+                position = job.get("stanowisko") or job.get("position", "")
+                
+                if all([period, company, position]):
+                    highlights.append(f"{position} at {company} ({period})")
+            
+            # 2. TOP OSIĄGNIĘCIA Z OPISEM - SZUKAJ KONKRETNYCH LICZB
+            if work_exp_data:
+                for job in work_exp_data[:2]:
+                    achievements = job.get("kluczowe_osiagniecia") or job.get("key_achievements", [])
+                    
+                    if achievements:
+                        # Weź PIERWSZE 2 osiągnięcia które mają liczby/procenty
+                        for achievement in achievements[:3]:
+                            achievement_str = str(achievement).strip()
+                            
+                            # Filtruj osiągnięcia z liczbami (konkretne rezultaty)
+                            if any(char.isdigit() for char in achievement_str):
+                                highlights.append(achievement_str)
+                                if len(highlights) >= 5:
+                                    break
+                    
+                    if len(highlights) >= 5:
+                        break
+            
+            # 3. EDUKACJA Z SPECJALIZACJĄ
+            if len(highlights) < 6:
+                education = analysis.get("wyksztalcenie") or analysis.get("education", [])
+                
+                if education:
+                    edu = education[0]
+                    degree = edu.get("stopien") or edu.get("degree", "")
+                    field = edu.get("kierunek") or edu.get("field", "")
+                    
+                    if degree and field:
+                        highlights.append(f"Education: {degree} in {field}")
+                    elif degree:
+                        highlights.append(f"Education: {degree}")
+            
+            # 4. TOP TECHNOLOGIE (TYLKO WAŻNE!)
+            if len(highlights) < 6:
+                skills = analysis.get("umiejetnosci") or analysis.get("skills", {})
+                
+                if isinstance(skills, dict):
+                    # Zbierz wszystkie techy
+                    tech_list = []
+                    
+                    for key in ["programowanie_skrypty", "programming_scripting"]:
+                        tech_list.extend(skills.get(key, []))
+                    
+                    for key in ["frameworki_biblioteki", "frameworks_libraries"]:
+                        tech_list.extend(skills.get(key, []))
+                    
+                    # Filtruj TOP (najczęstsze, najważniejsze)
+                    tech_list = [t for t in tech_list if t and len(str(t)) > 2][:5]
+                    
+                    if tech_list:
+                        tech_str = ", ".join([str(t) for t in tech_list])
+                        highlights.append(f"Core Technologies: {tech_str}")
+            
+            # 5. LATA DOŚWIADCZENIA
+            if len(highlights) < 6:
+                years = analysis.get("lata_doswiadczenia") or analysis.get("years_experience", 0)
+                
+                if years and int(float(years)) > 0:
+                    highlights.append(f"{int(float(years))}+ years in IT and Data Science")
+            
+            # 6. CERTYFIKATY - KONKRETNE
+            if len(highlights) < 6:
+                certs = analysis.get("certyfikaty_i_kursy") or analysis.get("certifications_and_courses", [])
+                
+                if certs:
+                    top_certs = []
+                    for cert in certs[:3]:
+                        cert_name = cert.get("nazwa") or cert.get("name", "")
+                        cert_issuer = cert.get("wystawca") or cert.get("issuer", "")
+                        
+                        if cert_name:
+                            if cert_issuer:
+                                top_certs.append(f"{cert_name} ({cert_issuer})")
+                            else:
+                                top_certs.append(cert_name)
+                    
+                    if top_certs:
+                        highlights.append(f"Certifications: {', '.join(top_certs[:2])}")
+            
+            # Ogranicz do 6 i czyszcz pusty text
+            highlights = [h for h in highlights if h and len(str(h).strip()) > 5]
+            return highlights[:6]
+        
+        except Exception as e:
+            print(f"Error in extract_key_highlights: {e}")
+            return []
 
     def _get_language_name(self, lang_code, output_lang):
         """Get language name in specified language"""
@@ -494,459 +731,774 @@ class CVAnalyzer:
         }
         return names.get(lang_code, {}).get(output_lang, lang_code)
     
-    def generate_pdf_output(self, analysis, template_type='full'):
-        """Generate PDF with proper Polish character support and template filtering"""
-        # Apply template filter first
+    def generate_pdf_output(self, analysis, template_type='full', language=None):
+        """Generate PDF with FPDF2 - Arsenal font - 2 pages layout"""
+        
         filtered_analysis = self.apply_template_filters(analysis, template_type)
-              
-        buffer = BytesIO()
+        if language is None:
+            language = filtered_analysis.get('output_language', 'en')
+        # Font paths
+        arsenal_regular = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\arsenal\Arsenal-Regular.ttf"
+        arsenal_bold = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\arsenal\Arsenal-Bold.ttf"
         
-        # Try to register Unicode font
-        try:
-            pdfmetrics.registerFont(TTFont('DejaVuSans', 'DejaVuSans.ttf'))
-            pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', 'DejaVuSans-Bold.ttf'))
-            font_name = 'DejaVuSans'
-            font_bold = 'DejaVuSans-Bold'
-        except:
-            # Fallback to Courier which has better UTF-8 support than Times
-            font_name = 'Courier'
-            font_bold = 'Courier-Bold'
-        
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
-        
-        styles = getSampleStyleSheet()
-        
-        # Custom styles with Unicode font
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=20,
-            textColor=colors.HexColor('#1f77b4'),
-            fontName=font_bold,
-            alignment=1,
-            spaceAfter=20
-        )
-        
-        heading_style = ParagraphStyle(
-            'CustomHeading',
-            parent=styles['Heading2'],
-            fontSize=13,
-            textColor=colors.HexColor('#2c3e50'),
-            fontName=font_bold,
-            spaceAfter=8,
-            spaceBefore=10
-        )
-        
-        normal_style = ParagraphStyle(
-            'CustomNormal',
-            parent=styles['Normal'],
-            fontSize=9,
-            fontName=font_name,
-            spaceAfter=5,
-            leading=12
-        )
-        
-        bold_style = ParagraphStyle(
-            'CustomBold',
-            parent=styles['Normal'],
-            fontSize=9,
-            fontName=font_bold,
-            leading=12
-        )
-        
-        story = []
-        
-        # Determine output language
-        output_lang = filtered_analysis.get('output_language', 'english')
-        is_polish = (output_lang == 'polish')
-        
-        # Helper to safely encode text for PDF
         def safe_text(text):
             if text is None:
                 return 'N/A'
-            text = str(text)
-            # Escape XML special characters
-            text = text.replace('&', '&amp;')
-            text = text.replace('<', '&lt;')
-            text = text.replace('>', '&gt;')
-            # Ensure proper Unicode encoding
-            try:
-                text.encode('utf-8')
-                return text
-            except:
-                return text.encode('utf-8', errors='ignore').decode('utf-8')
+            return str(text)
         
-        # Headers dictionary
-        h = {
-            'title': 'Profil Kandydata' if is_polish else 'Candidate Profile',
-            'detected': 'Wykryty język' if is_polish else 'Detected Language',
-            'basic': 'INFORMACJE PODSTAWOWE' if is_polish else 'BASIC INFORMATION',
-            'location': 'LOKALIZACJA I DOSTĘPNOŚĆ' if is_polish else 'LOCATION AND AVAILABILITY',
-            'summary': 'KRÓTKI OPIS KANDYDATA' if is_polish else 'CANDIDATE SUMMARY',
-            'tech': 'STACK TECHNOLOGICZNY' if is_polish else 'TECHNOLOGY STACK',
-            'experience': 'DOŚWIADCZENIE ZAWODOWE' if is_polish else 'WORK EXPERIENCE',
-            'education': 'EDUKACJA' if is_polish else 'EDUCATION',
-            'certificates': 'CERTYFIKATY' if is_polish else 'CERTIFICATES',
-            'languages': 'ZNAJOMOŚĆ JĘZYKÓW' if is_polish else 'LANGUAGES',
-            'fit': 'DOPASOWANIE DO WYMAGAŃ' if is_polish else 'FIT ASSESSMENT',
-            'name': 'Imię i nazwisko' if is_polish else 'Name',
-            'email': 'Email',
-            'phone': 'Telefon' if is_polish else 'Phone',
-            'loc': 'Lokalizacja' if is_polish else 'Location',
-            'remote': 'Praca zdalna' if is_polish else 'Remote Work',
-            'avail': 'Dostępność' if is_polish else 'Availability',
-            'prog_lang': 'Języki programowania' if is_polish else 'Programming Languages',
-            'frameworks': 'Frameworki' if is_polish else 'Frameworks',
-            'databases': 'Bazy danych' if is_polish else 'Databases',
-            'tools': 'Narzędzia' if is_polish else 'Tools',
-            'position': 'Stanowisko' if is_polish else 'Position',
-            'period': 'Okres' if is_polish else 'Period',
-            'project': 'Projekt' if is_polish else 'Project',
-            'tasks': 'Zadania' if is_polish else 'Tasks',
-            'match': 'POZIOM DOPASOWANIA' if is_polish else 'MATCH LEVEL',
-            'recommendation': 'REKOMENDACJA' if is_polish else 'RECOMMENDATION',
-            'justification': 'Uzasadnienie' if is_polish else 'Justification',
-            'strengths': 'Mocne strony' if is_polish else 'Key Strengths'
-        }
+        def get_section_name(en_name):
+            """Polish translation"""
+            output_lang = filtered_analysis.get('output_language', 'english')
+            
+            translations = {
+                'K E Y H I G H L I G H T S':'G Ł Ó W N E  O S I Ą G N I Ę C I A',
+                'E D U C A T I O N': 'W Y K S Z T A Ł C E N I E',
+                'L A N G U A G E S': 'J Ę Z Y K I',
+                'C E R T I F I C A T I O N S': 'C E R T Y F I K A T Y',
+                'P R O F I L E  S U M M A R Y': 'P O D S U M O W A N I E  P R O F I L U',
+                'S K I L L S': 'U M I E J Ę T N O Ś C I',
+                'T E C H  S T A C K': 'T E C H N O L O G I E',
+                'W O R K  E X P E R I E N C E': 'D O Ś W I A D C Z E N I E  Z A W O D O W E',
+                
+            }
+            
+            if output_lang == 'polish':
+                return translations.get(en_name, en_name)
+            return en_name
         
-        # Build PDF content
-        story.append(Paragraph(safe_text(h['title']), title_style))
-        story.append(Spacer(1, 0.2*inch))
+        # Get data
+        work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
         
-        # Add anonymous watermark if applicable
-        if template_type == 'anonymous':
-            warning_text = '⚠️ RAPORT ANONIMOWY - DANE OSOBOWE UKRYTE' if is_polish else '⚠️ ANONYMOUS REPORT - PERSONAL DATA HIDDEN'
-            story.append(Paragraph(f"<i>{safe_text(warning_text)}</i>", normal_style))
-            story.append(Spacer(1, 0.15*inch))
-        
-        if "detected_language" in filtered_analysis:
-            story.append(Paragraph(f"<b>{safe_text(h['detected'])}:</b> {safe_text(filtered_analysis['detected_language'].upper())}", normal_style))
-            story.append(Spacer(1, 0.15*inch))
+        candidate_name = "CANDIDATE NAME"
+        candidate_title = "Professional Title"
         
         if "podstawowe_dane" in filtered_analysis:
-            dane = filtered_analysis["podstawowe_dane"]
-            story.append(Paragraph(safe_text(h['basic']), heading_style))
-            story.append(Paragraph(f"<b>{safe_text(h['name'])}:</b> {safe_text(dane.get('imie_nazwisko', 'N/A'))}", normal_style))
-            story.append(Paragraph(f"<b>{safe_text(h['email'])}:</b> {safe_text(dane.get('email', 'N/A'))}", normal_style))
-            story.append(Paragraph(f"<b>{safe_text(h['phone'])}:</b> {safe_text(dane.get('telefon', 'N/A'))}", normal_style))
-            story.append(Spacer(1, 0.15*inch))
-        
-        if "lokalizacja_i_dostepnosc" in filtered_analysis:
-            lok = filtered_analysis["lokalizacja_i_dostepnosc"]
-            story.append(Paragraph(safe_text(h['location']), heading_style))
-            story.append(Paragraph(f"<b>{safe_text(h['loc'])}:</b> {safe_text(lok.get('lokalizacja', 'N/A'))}", normal_style))
-            story.append(Paragraph(f"<b>{safe_text(h['remote'])}:</b> {safe_text(lok.get('preferencja_pracy_zdalnej', 'N/A'))}", normal_style))
-            story.append(Paragraph(f"<b>{safe_text(h['avail'])}:</b> {safe_text(lok.get('dostepnosc', 'N/A'))}", normal_style))
-            story.append(Spacer(1, 0.15*inch))
-        
-        if "krotki_opis_kandydata" in filtered_analysis:
-            story.append(Paragraph(safe_text(h['summary']), heading_style))
-            story.append(Paragraph(safe_text(filtered_analysis["krotki_opis_kandydata"]), normal_style))
-            story.append(Spacer(1, 0.15*inch))
-        
-        if "stack_technologiczny" in filtered_analysis:
-            stack = filtered_analysis["stack_technologiczny"]
-            story.append(Paragraph(safe_text(h['tech']), heading_style))
+            candidate_name = safe_text(filtered_analysis["podstawowe_dane"].get('imie_nazwisko', 'CANDIDATE NAME')).upper()
+        elif "personal_data" in filtered_analysis or "basic_data" in filtered_analysis:
+                # ← DODAJ TEN WARUNEK DLA ANGIELSKIEJ WERSJI
+            basic = filtered_analysis.get("personal_data") or filtered_analysis.get("basic_data")
+            if basic:
+                candidate_name = safe_text(basic.get('full_name') or basic.get('name') or 'CANDIDATE NAME').upper()
             
-            if stack.get('jezyki_programowania'):
-                langs = ', '.join([safe_text(x) for x in stack['jezyki_programowania']])
-                story.append(Paragraph(f"<b>{safe_text(h['prog_lang'])}:</b> {langs}", normal_style))
-            if stack.get('frameworki'):
-                fws = ', '.join([safe_text(x) for x in stack['frameworki']])
-                story.append(Paragraph(f"<b>{safe_text(h['frameworks'])}:</b> {fws}", normal_style))
-            if stack.get('bazy_danych'):
-                dbs = ', '.join([safe_text(x) for x in stack['bazy_danych']])
-                story.append(Paragraph(f"<b>{safe_text(h['databases'])}:</b> {dbs}", normal_style))
-            if stack.get('narzedzia'):
-                tools = ', '.join([safe_text(x) for x in stack['narzedzia']])
-                story.append(Paragraph(f"<b>{safe_text(h['tools'])}:</b> {tools}", normal_style))
-            
-            story.append(Spacer(1, 0.15*inch))
+        if work_exp_data:
+            candidate_title = safe_text(work_exp_data[0].get('stanowisko') or work_exp_data[0].get('position', 'Professional'))
         
-        if "doswiadczenie_zawodowe" in filtered_analysis and filtered_analysis["doswiadczenie_zawodowe"]:
-            story.append(Paragraph(safe_text(h['experience']), heading_style))
+        # Create PDF
+        pdf = FPDF(orientation='P', unit='mm', format='A4')
+        pdf.add_page()
+        
+        # Rejestruj czcionki
+        try:
+            pdf.add_font('Arsenal', '', arsenal_regular)
+            pdf.add_font('Arsenal', 'B', arsenal_bold)
+        except Exception as e:
+            print(f"Font error: {e}")
+            pdf.set_font('DejaVu', '', 10)
+        
+        # Set margins
+        pdf.set_margins(left=12.7, top=0, right=12.7)
+        
+        # ===== PAGE 1: HEADER + PROFILE SUMMARY (BULLET POINTS ONLY) =====
+        
+        # Blue header
+        pdf.set_fill_color(50, 130, 180)
+        pdf.rect(0, 0, 210, 40, 'F')
+        
+        # Logo
+        logo_path = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\IS_New 1.png"
+        try:
+            pdf.image(logo_path, x=5, y=9, w=50)
+        except Exception as e:
+            print(f"Logo error: {e}")
+        
+        # Name - centered
+        pdf.set_font('Arsenal', 'B', 24)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_xy(0, 12)
+        pdf.cell(0, 8, candidate_name, align='C')
+        
+        # Title - centered
+        pdf.set_font('Arsenal', '', 12)
+        pdf.set_xy(0, 22)
+        pdf.cell(0, 8, candidate_title, align='C')
+        
+        # Back to black
+        pdf.set_text_color(0, 0, 0)
+        
+        # Move down after header
+        pdf.set_y(50)
+        pdf.set_x(12.7)
+        
+        # ===== GENERATE KEY HIGHLIGHTS FROM PROFILE SUMMARY =====
+        profile_summary = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
+        
+        if profile_summary and not filtered_analysis.get("mocne_strony"):
+            # Split by bullets or sentences to generate highlights
+            highlights = [h.strip() for h in profile_summary.split('•') if h.strip()]
+            if not highlights:
+                highlights = [s.strip() for s in profile_summary.split('.') if s.strip()][:6]
+            filtered_analysis['mocne_strony'] = highlights[:6]
+        
+        # ===== DISPLAY KEY HIGHLIGHTS ON PAGE 1 =====
+        highlights = filtered_analysis.get("key_highlights", [])
+
+        # DEBUG: Sprawdź co jest w key_highlights
+        print(f"DEBUG key_highlights: {highlights}")
+        print(f"DEBUG type: {type(highlights)}")
+
+        # Zawsze wyświetlaj highlights, nawet jeśli są puste - wygeneruj je z profile_summary
+        if not highlights or len(highlights) == 0:
+            # Wygeneruj bullet points z profile_summary
+            profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
             
-            for idx, exp in enumerate(filtered_analysis["doswiadczenie_zawodowe"], 1):
-                story.append(Paragraph(f"<b>{idx}. {safe_text(exp.get('nazwa_firmy', 'N/A'))}</b>", bold_style))
-                story.append(Paragraph(f"<b>{safe_text(h['position'])}:</b> {safe_text(exp.get('stanowisko', 'N/A'))}", normal_style))
-                story.append(Paragraph(f"<b>{safe_text(h['period'])}:</b> {safe_text(exp.get('daty', 'N/A'))}", normal_style))
-                story.append(Paragraph(f"<b>{safe_text(h['project'])}:</b> {safe_text(exp.get('opis_projektu', 'N/A'))}", normal_style))
+            if profile_text and profile_text.strip():
+                # Split by bullets lub zdania
+                if "•" in profile_text:
+                    highlights = [h.strip() for h in profile_text.split("•") if h.strip()][:6]
+                else:
+                    # Split by sentences
+                    sentences = [s.strip() for s in profile_text.split(".") if len(s.strip()) > 10]
+                    highlights = sentences[:6]
                 
-                if exp.get('zadania'):
-                    story.append(Paragraph(f"<b>{safe_text(h['tasks'])}:</b>", bold_style))
-                    for zadanie in exp['zadania']:
-                        story.append(Paragraph(f"• {safe_text(zadanie)}", normal_style))
+                print(f"DEBUG generated highlights: {highlights}")
+
+        # Teraz zawsze wyświetl
+        if highlights:
+            pdf.set_font('Arsenal', 'B', 11)
+            # Domyślnie 'en' jeśli brak parametru
+            pdf_language = language if language else 'en'
+            pdf.cell(0, 5, get_section_name('K E Y H I G H L I G H T S'), ln=True)
+            
+            # Underline
+            pdf.set_draw_color(76, 76, 76)
+            pdf.set_line_width(0.3)
+            y_before = pdf.get_y()
+            pdf.line(12.7, y_before, 197.3, y_before)
+            pdf.set_draw_color(0, 0, 0)
+            
+            pdf.set_y(y_before + 3)
+            pdf.set_x(12.7)
+            
+            pdf.set_font('Arsenal', '', 9)
+            
+            for highlight in highlights:
+                highlight_text = safe_text(highlight).strip()
+                if highlight_text:
+                    pdf.set_x(12.7)
+                    pdf.multi_cell(0, 4, f"• {highlight_text}", align='L')
+        else:
+            # If no highlights, show plain profile summary
+            profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
+            if profile_text:
+                pdf.set_font('Arsenal', 'B', 11)
+                pdf.cell(0, 5, get_section_name('P R O F I L E  S U M M A R Y'), ln=True)
                 
-                story.append(Spacer(1, 0.1*inch))
-            
-            story.append(Spacer(1, 0.15*inch))
+                # Underline
+                pdf.set_draw_color(76, 76, 76)
+                pdf.set_line_width(0.3)
+                y_before = pdf.get_y()
+                pdf.line(12.7, y_before, 197.3, y_before)
+                pdf.set_draw_color(0, 0, 0)
+                
+                pdf.set_y(y_before + 3)
+                pdf.set_x(12.7)
+                pdf.set_font('Arsenal', '', 9)
+                pdf.multi_cell(0, 4, profile_text, align='L')
         
-        if "edukacja" in filtered_analysis and filtered_analysis["edukacja"]:
-            story.append(Paragraph(safe_text(h['education']), heading_style))
-            for edu in filtered_analysis["edukacja"]:
-                if edu.get('uczelnia') or edu.get('kierunek'):
-                    story.append(Paragraph(f"<b>{safe_text(edu.get('stopien', ''))} - {safe_text(edu.get('kierunek', 'N/A'))}</b>", normal_style))
-                    story.append(Paragraph(f"{safe_text(edu.get('uczelnia', 'N/A'))} ({safe_text(edu.get('daty', 'N/A'))})", normal_style))
-            story.append(Spacer(1, 0.15*inch))
+        # ===== PAGE 2: TWO COLUMNS LAYOUT - NEW ORDER =====
+        pdf.add_page()
+        pdf.set_margins(left=12.7, top=0, right=12.7)
         
-        if "certyfikaty" in filtered_analysis and filtered_analysis["certyfikaty"]:
-            story.append(Paragraph(safe_text(h['certificates']), heading_style))
-            for cert in filtered_analysis["certyfikaty"]:
-                if cert.get('nazwa'):
-                    story.append(Paragraph(f"• {safe_text(cert['nazwa'])} - {safe_text(cert.get('wystawca', 'N/A'))} ({safe_text(cert.get('data', 'N/A'))})", normal_style))
-            story.append(Spacer(1, 0.15*inch))
+        # Blue header (repeat on page 2)
+        pdf.set_fill_color(50, 130, 180)
+        pdf.rect(0, 0, 210, 40, 'F')
         
-        if "znajomosc_jezykow" in filtered_analysis and filtered_analysis["znajomosc_jezykow"]:
-            story.append(Paragraph(safe_text(h['languages']), heading_style))
-            for lang in filtered_analysis["znajomosc_jezykow"]:
-                if lang.get('jezyk'):
-                    story.append(Paragraph(f"• {safe_text(lang['jezyk'])}: {safe_text(lang.get('poziom', 'N/A'))}", normal_style))
-            story.append(Spacer(1, 0.15*inch))
+        # Logo
+        try:
+            pdf.image(logo_path, x=5, y=9, w=50)
+        except Exception as e:
+            print(f"Logo error: {e}")
         
-        if "dopasowanie_do_wymagan" in filtered_analysis:
-            dop = filtered_analysis["dopasowanie_do_wymagan"]
+        # Name
+        pdf.set_font('Arsenal', 'B', 24)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_xy(0, 12)
+        pdf.cell(0, 8, candidate_name, align='C')
+        
+        # Title
+        pdf.set_font('Arsenal', '', 12)
+        pdf.set_xy(0, 22)
+        pdf.cell(0, 8, candidate_title, align='C')
+        
+        # Back to black
+        pdf.set_text_color(0, 0, 0)
+        
+        # Move down
+        pdf.set_y(50)
+        
+        # ===== TWO COLUMN LAYOUT - NEW ORDER =====
+        col_left_x = 12.7
+        col_right_x = 100
+        
+        col_left_width = 80
+        col_right_width = 97.3
+        
+        def add_section_header(x, title, max_width):
+            """Add section header with underline"""
+            pdf.set_font('Arsenal', 'B', 10)
+            pdf.set_xy(x, pdf.get_y())
+            pdf.multi_cell(max_width, 5, title)
             
-            story.append(Paragraph(safe_text(h['fit']), heading_style))
-            story.append(Spacer(1, 0.1*inch))
+            pdf.set_draw_color(76, 76, 76)
+            pdf.set_line_width(0.3)
+            y_pos = pdf.get_y()
+            pdf.line(x, y_pos, x + max_width - 2, y_pos)
+            pdf.set_draw_color(0, 0, 0)
             
-            match_level = safe_text(dop.get('poziom_dopasowania', 'N/A')).upper()
-            recommendation = safe_text(dop.get('rekomendacja', 'N/A')).upper()
+            return y_pos + 3
+        
+        def add_text_column(x, text, font_size=8, max_width=45):
+            """Add wrapped text to column"""
+            pdf.set_font('Arsenal', '', font_size)
+            pdf.set_xy(x, pdf.get_y())
+            pdf.multi_cell(max_width, 4, text, align='L')
+        
+        def add_bold_text_column(x, text, font_size=8, max_width=45):
+            """Add bold wrapped text to column"""
+            pdf.set_font('Arsenal', 'B', font_size)
+            pdf.set_xy(x, pdf.get_y())
+            pdf.multi_cell(max_width, 4, text, align='L')
+        
+        # ===== LEFT COLUMN: SKILLS, TECH STACK, LANGUAGES, CERTIFICATIONS =====
+        
+        # SKILLS
+        skills_data = filtered_analysis.get("umiejetnosci") or filtered_analysis.get("skills")
+        if skills_data:
+            pdf.set_xy(col_left_x, 50)
+            y_left = add_section_header(col_left_x, get_section_name('S K I L L S'), col_left_width)
+            pdf.set_y(y_left)
             
-            data = [
-                [Paragraph(f"<b>{safe_text(h['match'])}:</b>", bold_style), 
-                Paragraph(f"<b>{match_level}</b>", bold_style)],
-                [Paragraph(f"<b>{safe_text(h['recommendation'])}:</b>", bold_style), 
-                Paragraph(f"<b>{recommendation}</b>", bold_style)]
+            skill_cats = [
+                ('programowanie_skrypty', 'programming_scripting', 'Programming'),
+                ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks'),
+                ('infrastruktura_devops', 'infrastructure_devops', 'Infrastructure'),
+                ('chmura', 'cloud', 'Cloud'),
+                ('bazy_kolejki', 'data_messaging', 'Data'),
+                ('monitoring', 'monitoring', 'Monitoring'),
             ]
             
-            t = Table(data, colWidths=[3*inch, 2.5*inch])
-            t.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#e8f4f8')),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, -1), font_bold),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-                ('TOPPADDING', (0, 0), (-1, -1), 10),
-                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
-            ]))
-            story.append(t)
-            story.append(Spacer(1, 0.15*inch))
+            for pl_key, en_key, label in skill_cats:
+                skills_list = skills_data.get(pl_key) or skills_data.get(en_key)
+                if skills_list:
+                    skills_str = ', '.join([safe_text(s) for s in skills_list])
+                    pdf.set_xy(col_left_x + 2, pdf.get_y())
+                    add_bold_text_column(col_left_x + 2, f"{label}:", 7, col_left_width - 4)
+                    pdf.set_xy(col_left_x + 2, pdf.get_y())
+                    add_text_column(col_left_x + 2, skills_str, 7, col_left_width - 4)
             
-            if dop.get('uzasadnienie'):
-                story.append(Paragraph(f"<b>{safe_text(h['justification'])}:</b>", bold_style))
-                story.append(Paragraph(safe_text(dop['uzasadnienie']), normal_style))
-                story.append(Spacer(1, 0.15*inch))
-            
-            if dop.get('mocne_strony'):
-                story.append(Paragraph(f"<b>{safe_text(h['strengths'])}:</b>", bold_style))
-                for idx, strength in enumerate(dop['mocne_strony'], 1):
-                    story.append(Paragraph(f"{idx}. {safe_text(strength)}", normal_style))
+            pdf.set_y(pdf.get_y() + 2)
         
-        doc.build(story)
+        # TECH STACK
+        tech_summary = filtered_analysis.get("podsumowanie_technologii") or filtered_analysis.get("tech_stack_summary")
+        if tech_summary:
+            pdf.set_xy(col_left_x, pdf.get_y())
+            y_left = add_section_header(col_left_x, get_section_name('T E C H  S T A C K'), col_left_width)
+            pdf.set_y(y_left)
+            description = tech_summary.get('opis') or tech_summary.get('description')
+            if description:
+                pdf.set_xy(col_left_x + 2, pdf.get_y())
+                add_text_column(col_left_x + 2, safe_text(description), 7, col_left_width - 4)
+                pdf.set_y(pdf.get_y() + 2)
+        
+        # LANGUAGES
+        languages_data = filtered_analysis.get("jezyki_obce") or filtered_analysis.get("languages", [])
+        if languages_data:
+            pdf.set_xy(col_left_x, pdf.get_y())
+            y_left = add_section_header(col_left_x, get_section_name('L A N G U A G E S'), col_left_width)
+            pdf.set_y(y_left)
+            
+            for lang in languages_data:
+                language = safe_text(lang.get('jezyk') or lang.get('language', ''))
+                level = safe_text(lang.get('poziom') or lang.get('level', ''))
+                pdf.set_xy(col_left_x + 2, pdf.get_y())
+                add_text_column(col_left_x + 2, f"{language}: {level}", 7, col_left_width - 4)
+            
+            pdf.set_y(pdf.get_y() + 2)
+        
+        # CERTIFICATIONS
+        certs_and_courses = (
+            filtered_analysis.get("certyfikaty_i_kursy") or 
+            filtered_analysis.get("certifications_and_courses") or
+            (filtered_analysis.get("certyfikaty", []) or []) + (filtered_analysis.get("certifications", []) or [])
+        )
+        
+        if certs_and_courses:
+            pdf.set_xy(col_left_x, pdf.get_y())
+            y_left = add_section_header(col_left_x, get_section_name('C E R T I F I C A T I O N S'), col_left_width)
+            pdf.set_y(y_left)
+            
+            for item in certs_and_courses:
+                item_name = safe_text(item.get('nazwa') or item.get('name', ''))
+                issuer = safe_text(item.get('wystawca') or item.get('issuer', ''))
+                
+                pdf.set_xy(col_left_x + 2, pdf.get_y())
+                add_bold_text_column(col_left_x + 2, item_name, 7, col_left_width - 4)
+                pdf.set_xy(col_left_x + 2, pdf.get_y())
+                add_text_column(col_left_x + 2, issuer, 6, col_left_width - 4)
+            
+            pdf.set_y(pdf.get_y() + 2)
+        
+        # ===== RIGHT COLUMN: PROFILE SUMMARY (FULL TEXT), WORK EXPERIENCE, EDUCATION =====
+        
+        # PROFILE SUMMARY - FULL TEXT (na drugiej stronie)
+        if profile_summary:
+            pdf.set_xy(col_right_x, 50)
+            y_right = add_section_header(col_right_x, get_section_name('P R O F I L E  S U M M A R Y'), col_right_width)
+            pdf.set_y(y_right)
+            
+            # Cały tekst bez bullet points
+            profile_text = safe_text(profile_summary)
+            # Usuń bullet points jeśli są
+            profile_text = profile_text.replace('•', '').strip()
+            
+            pdf.set_xy(col_right_x + 2, pdf.get_y())
+            add_text_column(col_right_x + 2, profile_text, 7, col_right_width - 4)
+            pdf.set_y(pdf.get_y() + 2)
+        
+        # WORK EXPERIENCE
+        if work_exp_data:
+            pdf.set_xy(col_right_x, pdf.get_y())
+            y_right = add_section_header(col_right_x, get_section_name('W O R K  E X P E R I E N C E'), col_right_width)
+            pdf.set_y(y_right)
+            
+            for exp in work_exp_data:
+                period = safe_text(exp.get('okres') or exp.get('period', 'N/A'))
+                company = safe_text(exp.get('firma') or exp.get('company', ''))
+                position = safe_text(exp.get('stanowisko') or exp.get('position', ''))
+                
+                pdf.set_xy(col_right_x + 2, pdf.get_y())
+                add_bold_text_column(col_right_x + 2, f"{period} - {company}", 8, col_right_width - 4)
+                pdf.set_xy(col_right_x + 2, pdf.get_y())
+                add_text_column(col_right_x + 2, position, 7, col_right_width - 4)
+                
+                achievements = exp.get('kluczowe_osiagniecia') or exp.get('key_achievements', [])
+                if achievements:
+                    for achievement in achievements:
+                        pdf.set_xy(col_right_x + 2, pdf.get_y())
+                        add_text_column(col_right_x + 2, f"• {safe_text(achievement)}", 7, col_right_width - 4)
+                
+                pdf.set_y(pdf.get_y() + 2)
+        
+        # EDUCATION
+        education_data = filtered_analysis.get("wyksztalcenie") or filtered_analysis.get("education", [])
+        if education_data:
+            pdf.set_xy(col_right_x, pdf.get_y())
+            y_right = add_section_header(col_right_x, get_section_name('E D U C A T I O N'), col_right_width)
+            pdf.set_y(y_right)
+            
+            for edu in education_data:
+                institution = safe_text(edu.get('uczelnia') or edu.get('institution', ''))
+                degree = safe_text(edu.get('stopien') or edu.get('degree', ''))
+                field = safe_text(edu.get('kierunek') or edu.get('field', ''))
+                period = safe_text(edu.get('okres') or edu.get('period', ''))
+                
+                pdf.set_xy(col_right_x + 2, pdf.get_y())
+                add_bold_text_column(col_right_x + 2, institution, 7, col_right_width - 4)
+                pdf.set_xy(col_right_x + 2, pdf.get_y())
+                add_text_column(col_right_x + 2, f"{degree} of {field}", 7, col_right_width - 4)
+                pdf.set_xy(col_right_x + 2, pdf.get_y())
+                add_text_column(col_right_x + 2, period, 7, col_right_width - 4)
+                pdf.set_y(pdf.get_y() + 2)
+        # ===== GENERATE KEY HIGHLIGHTS FROM PROFILE SUMMARY =====
+        profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
+        
+        # Generate highlights if they don't exist yet
+        if profile_text and not filtered_analysis.get("mocne_strony"):
+            # Try splitting by bullets first
+            highlights = [h.strip() for h in profile_text.split('•') if h.strip()]
+            
+            # If no bullets, split by sentences
+            if not highlights or len(highlights) < 2:
+                sentences = [s.strip() for s in profile_text.split('.') if s.strip()]
+                highlights = sentences[:6]
+            
+            filtered_analysis['mocne_strony'] = highlights[:6] if highlights else []
+        # Save to buffer
+        buffer = BytesIO()
+        pdf.output(buffer)
         buffer.seek(0)
         return buffer
-
     
-    def generate_docx_output(self, analysis, template_type='full'):
-        """Generate comprehensive DOCX output from analysis with template support"""
-        # Apply template filter first
+    def generate_docx_output(self, analysis, template_type='full', language=None):
+        """Generate DOCX with Arsenal font - all headers with underlines"""
+        
         filtered_analysis = self.apply_template_filters(analysis, template_type)
+        if language is None:
+            language = filtered_analysis.get('output_language', 'en')
+        
+        # Arsenal font path
+        arsenal_regular = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\arsenal\Arsenal-Regular.ttf"
+        
+        def safe_text(text):
+            if text is None:
+                return 'N/A'
+            return str(text)
+        
+        def get_section_name(en_name):
+            output_lang = filtered_analysis.get('output_language', 'english')
+            translations = {
+                'K E Y H I G H L I G H T S': 'G Ł Ó W N E  O S I Ą G N I Ę C I A',
+                'E D U C A T I O N': 'W Y K S Z T A Ł C E N I E',
+                'L A N G U A G E S': 'J Ę Z Y K I',
+                'C E R T I F I C A T I O N S': 'C E R T Y F I K A T Y',
+                'P R O F I L E  S U M M A R Y': 'P O D S U M O W A N I E  P R O F I L U',
+                'S K I L L S': 'U M I E J Ę T N O Ś C I',
+                'T E C H  S T A C K': 'T E C H N O L O G I E',
+                'W O R K  E X P E R I E N C E': 'D O Ś W I A D C Z E N I E  Z A W O D O W E',
+            }
+            if output_lang == 'polish':
+                return translations.get(en_name, en_name)
+            return en_name
+        
+        def apply_arsenal_font(run, size=9, bold=False):
+            """Apply Arsenal font styling"""
+            run.font.name = 'Arsenal'
+            run.font.size = Pt(size)
+            if bold:
+                run.font.bold = True
+        
+        def add_section_header_with_underline(cell, title):
+            """Add header with underline using Arsenal font"""
+            p = cell.add_paragraph()
+            p.paragraph_format.space_before = Pt(3)
+            p.paragraph_format.space_after = Pt(2)
+            
+            run = p.add_run(title)
+            apply_arsenal_font(run, size=10, bold=True)
+            
+            # Add underline
+            pPr = p._element.get_or_add_pPr()
+            pBdr = parse_xml(r'<w:pBdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:bottom w:val="single" w:sz="12" w:space="1" w:color="4C4C4C"/></w:pBdr>')
+            pPr.append(pBdr)
+            
+            return p
+        
+        def create_full_width_header(doc, candidate_name, candidate_title):
+            """Create full-width blue header"""
+            header_table = doc.add_table(rows=1, cols=1)
+            tbl = header_table._element
+            tblPr = tbl.tblPr
+            
+            tblW = OxmlElement('w:tblW')
+            tblW.set(qn('w:w'), '6500')
+            tblW.set(qn('w:type'), 'pct')
+            tblPr.append(tblW)
+            
+            tblInd = OxmlElement('w:tblInd')
+            tblInd.set(qn('w:w'), '-1440')
+            tblInd.set(qn('w:type'), 'dxa')
+            tblPr.append(tblInd)
+            
+            tblBorders = OxmlElement('w:tblBorders')
+            for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+                border = OxmlElement(f'w:{border_name}')
+                border.set(qn('w:val'), 'none')
+                border.set(qn('w:sz'), '0')
+                border.set(qn('w:space'), '0')
+                border.set(qn('w:color'), 'auto')
+                tblBorders.append(border)
+            tblPr.append(tblBorders)
+            
+            tblCellMar = OxmlElement('w:tblCellMar')
+            for margin_type in ['top', 'left', 'bottom', 'right']:
+                margin = OxmlElement(f'w:{margin_type}')
+                margin.set(qn('w:w'), '0')
+                margin.set(qn('w:type'), 'dxa')
+                tblCellMar.append(margin)
+            tblPr.append(tblCellMar)
+            
+            header_cell = header_table.rows[0].cells[0]
+            shading_elm = parse_xml(r'<w:shd {} w:fill="3282B4"/>'.format('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'))
+            header_cell._element.get_or_add_tcPr().append(shading_elm)
+            
+            header_para = header_cell.paragraphs[0]
+            header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            header_para.paragraph_format.space_before = Pt(15)
+            header_para.paragraph_format.space_after = Pt(5)
+            
+            name_run = header_para.add_run(candidate_name)
+            apply_arsenal_font(name_run, size=28, bold=True)
+            name_run.font.color.rgb = RGBColor(255, 255, 255)
+            
+            title_para = header_cell.add_paragraph()
+            title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            title_para.paragraph_format.space_before = Pt(0)
+            title_para.paragraph_format.space_after = Pt(15)
+            
+            title_run = title_para.add_run(candidate_title)
+            apply_arsenal_font(title_run, size=13, bold=False)
+            title_run.font.color.rgb = RGBColor(255, 255, 255)
+        
+        work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
+        
+        candidate_name = "CANDIDATE NAME"
+        candidate_title = "Professional Title"
+        
+        if "podstawowe_dane" in filtered_analysis:
+            candidate_name = safe_text(filtered_analysis["podstawowe_dane"].get('imie_nazwisko', 'CANDIDATE NAME')).upper()
+        elif "personal_data" in filtered_analysis or "basic_data" in filtered_analysis:
+                # ← DODAJ TEN WARUNEK DLA ANGIELSKIEJ WERSJI
+            basic = filtered_analysis.get("personal_data") or filtered_analysis.get("basic_data")
+            if basic:
+                candidate_name = safe_text(basic.get('full_name') or basic.get('name') or 'CANDIDATE NAME').upper()
+            
+        if work_exp_data:
+            candidate_title = safe_text(work_exp_data[0].get('stanowisko') or work_exp_data[0].get('position', 'Professional'))
         
         doc = Document()
         
-        # Determine output language
-        output_lang = filtered_analysis.get('output_language', 'english')
-        is_polish = (output_lang == 'polish')
+        sections = doc.sections
+        for section in sections:
+            section.top_margin = Inches(0)
+            section.bottom_margin = Inches(0.3)
+            section.left_margin = Inches(0.5)
+            section.right_margin = Inches(0.5)
         
-        # Translations for headers
-        headers = {
-            'title': 'Profil Kandydata' if is_polish else 'Candidate Profile',
-            'detected': 'Wykryty język' if is_polish else 'Detected Language',
-            'basic': 'INFORMACJE PODSTAWOWE' if is_polish else 'BASIC INFORMATION',
-            'location': 'LOKALIZACJA I DOSTĘPNOŚĆ' if is_polish else 'LOCATION & AVAILABILITY',
-            'summary': 'KRÓTKI OPIS KANDYDATA' if is_polish else 'CANDIDATE SUMMARY',
-            'tech': 'STACK TECHNOLOGICZNY' if is_polish else 'TECHNOLOGY STACK',
-            'experience': 'DOŚWIADCZENIE ZAWODOWE' if is_polish else 'WORK EXPERIENCE',
-            'education': 'EDUKACJA' if is_polish else 'EDUCATION',
-            'certificates': 'CERTYFIKATY' if is_polish else 'CERTIFICATES',
-            'languages': 'ZNAJOMOŚĆ JĘZYKÓW' if is_polish else 'LANGUAGES',
-            'fit': 'DOPASOWANIE DO WYMAGAŃ' if is_polish else 'FIT ASSESSMENT',
-            'name': 'Imię i nazwisko' if is_polish else 'Name',
-            'email': 'Email',
-            'phone': 'Telefon' if is_polish else 'Phone',
-            'loc': 'Lokalizacja' if is_polish else 'Location',
-            'remote': 'Preferencja pracy zdalnej' if is_polish else 'Remote Work Preference',
-            'avail': 'Dostępność' if is_polish else 'Availability',
-            'prog_lang': 'Języki programowania' if is_polish else 'Programming Languages',
-            'frameworks': 'Frameworki' if is_polish else 'Frameworks',
-            'databases': 'Bazy danych' if is_polish else 'Databases',
-            'tools': 'Narzędzia i technologie' if is_polish else 'Tools & Technologies',
-            'other': 'Inne technologie' if is_polish else 'Other Technologies',
-            'position': 'Stanowisko' if is_polish else 'Position',
-            'period': 'Okres' if is_polish else 'Period',
-            'project': 'Opis projektu' if is_polish else 'Project Description',
-            'tasks': 'Kluczowe zadania i odpowiedzialności' if is_polish else 'Key Responsibilities & Tasks',
-            'tech_stack': 'Stack technologiczny' if is_polish else 'Tech Stack',
-            'degree': 'Stopień' if is_polish else 'Degree',
-            'in': 'w dziedzinie' if is_polish else 'in',
-            'match': 'POZIOM DOPASOWANIA' if is_polish else 'MATCH LEVEL',
-            'recommendation': 'REKOMENDACJA' if is_polish else 'RECOMMENDATION',
-            'justification': 'Uzasadnienie' if is_polish else 'Justification',
-            'strengths': 'Mocne Strony' if is_polish else 'Key Strengths'
-        }
+        # ===== PAGE 1 =====
+        create_full_width_header(doc, candidate_name, candidate_title)
+        doc.add_paragraph()
         
-        # Title
-        title = doc.add_heading(headers['title'], 0)
-        title.alignment = 1  # Center
+        profile_summary = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
         
-        # Add anonymous watermark if applicable
-        if template_type == 'anonymous':
-            p = doc.add_paragraph()
-            run = p.add_run('⚠️ RAPORT ANONIMOWY - DANE OSOBOWE UKRYTE' if is_polish else '⚠️ ANONYMOUS REPORT - PERSONAL DATA HIDDEN')
-            run.italic = True
-            run.font.size = 152400  # 12pt
+        if profile_summary and not filtered_analysis.get("mocne_strony"):
+            highlights = [h.strip() for h in profile_summary.split('•') if h.strip()]
+            if not highlights:
+                highlights = [s.strip() for s in profile_summary.split('.') if s.strip()][:6]
+            filtered_analysis['mocne_strony'] = highlights[:6]
         
-        # Detected Language
-        if "detected_language" in filtered_analysis:
-            p = doc.add_paragraph()
-            p.add_run(f"{headers['detected']}: {filtered_analysis['detected_language'].upper()}").bold = True
+        highlights = filtered_analysis.get("key_highlights", [])
         
-        # Basic Info
-        if "podstawowe_dane" in filtered_analysis:
-            dane = filtered_analysis["podstawowe_dane"]
-            doc.add_heading(headers['basic'], level=1)
-            doc.add_paragraph(f"{headers['name']}: {dane.get('imie_nazwisko', 'N/A')}")
-            doc.add_paragraph(f"{headers['email']}: {dane.get('email', 'N/A')}")
-            doc.add_paragraph(f"{headers['phone']}: {dane.get('telefon', 'N/A')}")
+        if not highlights or len(highlights) == 0:
+            profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
+            if profile_text and profile_text.strip():
+                if "•" in profile_text:
+                    highlights = [h.strip() for h in profile_text.split("•") if h.strip()][:6]
+                else:
+                    sentences = [s.strip() for s in profile_text.split(".") if len(s.strip()) > 10]
+                    highlights = sentences[:6]
         
-        # Location & Availability
-        if "lokalizacja_i_dostepnosc" in filtered_analysis:
-            lok = filtered_analysis["lokalizacja_i_dostepnosc"]
-            doc.add_heading(headers['location'], level=1)
-            doc.add_paragraph(f"{headers['loc']}: {lok.get('lokalizacja', 'N/A')}")
-            doc.add_paragraph(f"{headers['remote']}: {lok.get('preferencja_pracy_zdalnej', 'N/A')}")
-            doc.add_paragraph(f"{headers['avail']}: {lok.get('dostepnosc', 'N/A')}")
+        # PAGE 1 - KEY HIGHLIGHTS WITH UNDERLINE
+        heading = doc.add_paragraph()
+        run = heading.add_run(get_section_name('K E Y H I G H L I G H T S'))
+        apply_arsenal_font(run, size=11, bold=True)
         
-        # Summary
-        if "krotki_opis_kandydata" in filtered_analysis:
-            doc.add_heading(headers['summary'], level=1)
-            doc.add_paragraph(str(filtered_analysis["krotki_opis_kandydata"]))
+        pPr = heading._element.get_or_add_pPr()
+        pBdr = parse_xml(r'<w:pBdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:bottom w:val="single" w:sz="12" w:space="1" w:color="4C4C4C"/></w:pBdr>')
+        pPr.append(pBdr)
         
-        # Tech Stack
-        if "stack_technologiczny" in filtered_analysis:
-            stack = filtered_analysis["stack_technologiczny"]
-            doc.add_heading(headers['tech'], level=1)
+        if highlights:
+            for highlight in highlights:
+                highlight_text = safe_text(highlight).strip()
+                if highlight_text:
+                    p = doc.add_paragraph(highlight_text, style='List Bullet')
+                    for run in p.runs:
+                        apply_arsenal_font(run, size=9, bold=False)
+        
+        doc.add_page_break()
+        
+        # ===== PAGE 2: TWO COLUMNS =====
+        create_full_width_header(doc, candidate_name, candidate_title)
+        doc.add_paragraph()
+        
+        page2_table = doc.add_table(rows=1, cols=2)
+        page2_table.autofit = False
+        
+        left_cell = page2_table.rows[0].cells[0]
+        right_cell = page2_table.rows[0].cells[1]
+        
+        # Clear existing paragraphs
+        for paragraph in list(left_cell.paragraphs):
+            p = paragraph._element
+            p.getparent().remove(p)
+        for paragraph in list(right_cell.paragraphs):
+            p = paragraph._element
+            p.getparent().remove(p)
+        
+        # ===== LEFT COLUMN =====
+        
+        # SKILLS WITH UNDERLINE
+        add_section_header_with_underline(left_cell, get_section_name('S K I L L S'))
+        
+        skills_data = filtered_analysis.get("umiejetnosci") or filtered_analysis.get("skills")
+        if skills_data:
+            skill_cats = [
+                ('programowanie_skrypty', 'programming_scripting', 'Programming'),
+                ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks'),
+                ('infrastruktura_devops', 'infrastructure_devops', 'Infrastructure'),
+                ('chmura', 'cloud', 'Cloud'),
+                ('bazy_kolejki', 'data_messaging', 'Data'),
+                ('monitoring', 'monitoring', 'Monitoring'),
+            ]
             
-            if stack.get('jezyki_programowania'):
-                doc.add_paragraph(f"{headers['prog_lang']}: {', '.join(stack.get('jezyki_programowania', []))}")
-            if stack.get('frameworki'):
-                doc.add_paragraph(f"{headers['frameworks']}: {', '.join(stack.get('frameworki', []))}")
-            if stack.get('bazy_danych'):
-                doc.add_paragraph(f"{headers['databases']}: {', '.join(stack.get('bazy_danych', []))}")
-            if stack.get('narzedzia'):
-                doc.add_paragraph(f"{headers['tools']}: {', '.join(stack.get('narzedzia', []))}")
-            if stack.get('inne_technologie'):
-                doc.add_paragraph(f"{headers['other']}: {', '.join(stack.get('inne_technologie', []))}")
+            for pl_key, en_key, label in skill_cats:
+                skills_list = skills_data.get(pl_key) or skills_data.get(en_key)
+                if skills_list:
+                    skills_str = ', '.join([safe_text(s) for s in skills_list])
+                    
+                    p = left_cell.add_paragraph(f"{label}:")
+                    p.paragraph_format.space_before = Pt(0)
+                    p.paragraph_format.space_after = Pt(0)
+                    for run in p.runs:
+                        apply_arsenal_font(run, size=7, bold=True)
+                    
+                    p = left_cell.add_paragraph(skills_str)
+                    p.paragraph_format.space_before = Pt(0)
+                    p.paragraph_format.space_after = Pt(0)
+                    for run in p.runs:
+                        apply_arsenal_font(run, size=7, bold=False)
         
-        # Work Experience
-        if "doswiadczenie_zawodowe" in filtered_analysis and filtered_analysis["doswiadczenie_zawodowe"]:
-            doc.add_heading(headers['experience'], level=1)
-            
-            for idx, exp in enumerate(filtered_analysis["doswiadczenie_zawodowe"], 1):
-                doc.add_heading(f"{idx}. {exp.get('nazwa_firmy', 'N/A')}", level=2)
-                doc.add_paragraph(f"{headers['position']}: {exp.get('stanowisko', 'N/A')}")
-                doc.add_paragraph(f"{headers['period']}: {exp.get('daty', 'N/A')}")
-                doc.add_paragraph(f"{headers['project']}: {exp.get('opis_projektu', 'N/A')}")
+        # TECH STACK WITH UNDERLINE
+        p = left_cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(1)
+        p.paragraph_format.space_after = Pt(0)
+        add_section_header_with_underline(left_cell, get_section_name('T E C H  S T A C K'))
+        
+        tech_summary = filtered_analysis.get("podsumowanie_technologii") or filtered_analysis.get("tech_stack_summary")
+        if tech_summary:
+            description = tech_summary.get('opis') or tech_summary.get('description')
+            if description:
+                p = left_cell.add_paragraph(safe_text(description))
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=7, bold=False)
+        
+        # LANGUAGES WITH UNDERLINE
+        p = left_cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(1)
+        p.paragraph_format.space_after = Pt(0)
+        add_section_header_with_underline(left_cell, get_section_name('L A N G U A G E S'))
+        
+        languages_data = filtered_analysis.get("jezyki_obce") or filtered_analysis.get("languages", [])
+        if languages_data:
+            for lang in languages_data:
+                language = safe_text(lang.get('jezyk') or lang.get('language', ''))
+                level = safe_text(lang.get('poziom') or lang.get('level', ''))
                 
-                if exp.get('zadania'):
-                    p = doc.add_paragraph(headers['tasks'] + ':')
-                    p.runs[0].bold = True
-                    for zadanie in exp.get('zadania', []):
-                        doc.add_paragraph(zadanie, style='List Bullet')
+                p = left_cell.add_paragraph(f"{language}: {level}")
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=7, bold=False)
+        
+        # CERTIFICATIONS WITH UNDERLINE
+        p = left_cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(1)
+        p.paragraph_format.space_after = Pt(0)
+        add_section_header_with_underline(left_cell, get_section_name('C E R T I F I C A T I O N S'))
+        
+        certs_and_courses = (
+            filtered_analysis.get("certyfikaty_i_kursy") or 
+            filtered_analysis.get("certifications_and_courses") or
+            (filtered_analysis.get("certyfikaty", []) or []) + (filtered_analysis.get("certifications", []) or [])
+        )
+        
+        if certs_and_courses:
+            for item in certs_and_courses:
+                item_name = safe_text(item.get('nazwa') or item.get('name', ''))
+                issuer = safe_text(item.get('wystawca') or item.get('issuer', ''))
                 
-                if exp.get('stos_technologiczny'):
-                    doc.add_paragraph(f"{headers['tech_stack']}: {', '.join(exp.get('stos_technologiczny', []))}")
-        
-        # Education
-        if "edukacja" in filtered_analysis and filtered_analysis["edukacja"]:
-            doc.add_heading(headers['education'], level=1)
-            for edu in filtered_analysis["edukacja"]:
-                if edu.get('uczelnia') or edu.get('kierunek'):
-                    p = doc.add_paragraph(f"{edu.get('stopien', '')} {headers['in']} {edu.get('kierunek', 'N/A')}")
-                    p.runs[0].bold = True
-                    doc.add_paragraph(f"{edu.get('uczelnia', 'N/A')} ({edu.get('daty', 'N/A')})")
-        
-        # Certificates
-        if "certyfikaty" in filtered_analysis and filtered_analysis["certyfikaty"]:
-            doc.add_heading(headers['certificates'], level=1)
-            for cert in filtered_analysis["certyfikaty"]:
-                if cert.get('nazwa'):
-                    doc.add_paragraph(f"{cert.get('nazwa', '')} - {cert.get('wystawca', 'N/A')} ({cert.get('data', 'N/A')})", style='List Bullet')
-        
-        # Languages
-        if "znajomosc_jezykow" in filtered_analysis and filtered_analysis["znajomosc_jezykow"]:
-            doc.add_heading(headers['languages'], level=1)
-            for lang in filtered_analysis["znajomosc_jezykow"]:
-                if lang.get('jezyk'):
-                    doc.add_paragraph(f"{lang.get('jezyk', '')}: {lang.get('poziom', 'N/A')}", style='List Bullet')
-        
-        # FIT ASSESSMENT
-        if "dopasowanie_do_wymagan" in filtered_analysis:
-            dop = filtered_analysis["dopasowanie_do_wymagan"]
-            
-            doc.add_heading(headers['fit'], level=1)
-            
-            # Match Level
-            p = doc.add_paragraph()
-            p.add_run(headers['match'] + ': ').bold = True
-            run = p.add_run(str(dop.get('poziom_dopasowania', 'N/A')).upper())
-            run.bold = True
-            run.font.size = 177800  # 14pt
-            
-            # Recommendation
-            p = doc.add_paragraph()
-            p.add_run(headers['recommendation'] + ': ').bold = True
-            run = p.add_run(str(dop.get('rekomendacja', 'N/A')).upper())
-            run.bold = True
-            run.font.size = 177800  # 14pt
-            
-            # Justification
-            if dop.get('uzasadnienie'):
-                doc.add_paragraph()
-                p = doc.add_paragraph()
-                p.add_run(headers['justification'] + ':').bold = True
-                doc.add_paragraph(str(dop.get('uzasadnienie', 'N/A')))
-            
-            # Key Strengths
-            if dop.get('mocne_strony'):
-                doc.add_paragraph()
-                p = doc.add_paragraph()
-                p.add_run(headers['strengths'] + ':').bold = True
-                for idx, strength in enumerate(dop.get('mocne_strony', []), 1):
-                    doc.add_paragraph(f"{idx}. {strength}", style='List Number')
-        
-        # Extended recommendations (only for extended template)
-        if template_type == 'extended' and "dopasowanie_do_wymagan" in filtered_analysis:
-            if 'extended_recommendations' in filtered_analysis["dopasowanie_do_wymagan"]:
-                ext = filtered_analysis["dopasowanie_do_wymagan"]['extended_recommendations']
+                p = left_cell.add_paragraph(item_name)
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=7, bold=True)
                 
-                doc.add_heading('ROZSZERZONE REKOMENDACJE' if is_polish else 'EXTENDED RECOMMENDATIONS', level=1)
-                
-                if 'interview_questions' in ext:
-                    doc.add_heading('Pytania rekrutacyjne' if is_polish else 'Interview Questions', level=2)
-                    for q in ext['interview_questions']:
-                        doc.add_paragraph(q, style='List Bullet')
-                
-                if 'development_areas' in ext:
-                    doc.add_heading('Obszary rozwoju' if is_polish else 'Development Areas', level=2)
-                    for area in ext['development_areas']:
-                        doc.add_paragraph(area, style='List Bullet')
+                p = left_cell.add_paragraph(issuer)
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=6, bold=False)
         
-        # Save to BytesIO
+        # ===== RIGHT COLUMN =====
+        
+        # PROFILE SUMMARY WITH UNDERLINE
+        add_section_header_with_underline(right_cell, get_section_name('P R O F I L E  S U M M A R Y'))
+        
+        if profile_summary:
+            profile_text = safe_text(profile_summary).replace('•', '').strip()
+            p = right_cell.add_paragraph(profile_text)
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.space_after = Pt(0)
+            for run in p.runs:
+                apply_arsenal_font(run, size=7, bold=False)
+        
+        # WORK EXPERIENCE WITH UNDERLINE
+        p = right_cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(1)
+        p.paragraph_format.space_after = Pt(0)
+        add_section_header_with_underline(right_cell, get_section_name('W O R K  E X P E R I E N C E'))
+        
+        if work_exp_data:
+            for exp in work_exp_data:
+                period = safe_text(exp.get('okres') or exp.get('period', 'N/A'))
+                company = safe_text(exp.get('firma') or exp.get('company', ''))
+                position = safe_text(exp.get('stanowisko') or exp.get('position', ''))
+                
+                p = right_cell.add_paragraph(f"{period} - {company}")
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=8, bold=True)
+                
+                p = right_cell.add_paragraph(position)
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=7, bold=False)
+                
+                achievements = exp.get('kluczowe_osiagniecia') or exp.get('key_achievements', [])
+                if achievements:
+                    for achievement in achievements:
+                        p = right_cell.add_paragraph(safe_text(achievement), style='List Bullet')
+                        p.paragraph_format.space_before = Pt(0)
+                        p.paragraph_format.space_after = Pt(0)
+                        for run in p.runs:
+                            apply_arsenal_font(run, size=7, bold=False)
+        
+        # EDUCATION WITH UNDERLINE
+        p = right_cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(1)
+        p.paragraph_format.space_after = Pt(0)
+        add_section_header_with_underline(right_cell, get_section_name('E D U C A T I O N'))
+        
+        education_data = filtered_analysis.get("wyksztalcenie") or filtered_analysis.get("education", [])
+        if education_data:
+            for edu in education_data:
+                institution = safe_text(edu.get('uczelnia') or edu.get('institution', ''))
+                degree = safe_text(edu.get('stopien') or edu.get('degree', ''))
+                field = safe_text(edu.get('kierunek') or edu.get('field', ''))
+                period = safe_text(edu.get('okres') or edu.get('period', ''))
+                
+                p = right_cell.add_paragraph(institution)
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=7, bold=True)
+                
+                p = right_cell.add_paragraph(f"{degree} of {field}")
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=7, bold=False)
+                
+                p = right_cell.add_paragraph(period)
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(0)
+                for run in p.runs:
+                    apply_arsenal_font(run, size=7, bold=False)
+        
         buffer = BytesIO()
         doc.save(buffer)
         buffer.seek(0)
         return buffer
-
-
