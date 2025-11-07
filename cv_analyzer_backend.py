@@ -4,11 +4,11 @@ import pytesseract
 import ollama
 import json
 import os
-
+from PIL import ImageEnhance
 from docx.oxml import parse_xml
 from fpdf import FPDF
 
-from PIL import Image
+from PIL import ImageEnhance, ImageFilter, Image
 import numpy as np
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
@@ -54,17 +54,160 @@ class CVAnalyzer:
     def __init__(self, model_name="qwen2.5:14b"):
         self.model_name = model_name
         
-    def extract_text_from_pdf(self, pdf_file):
-        """Extract text from PDF file or BytesIO object"""
+        self.TECH_KNOWLEDGE_BASE = {
+            "programming": [
+                "Python", "Java", "C#", "JavaScript", "TypeScript", "C++", "Go", "Ruby", "PHP", 
+                "Swift", "Kotlin", "Rust", "C", "Scala", "R", "MATLAB", "Julia", "Bash", "PowerShell",
+                "Perl", "Haskell", "Erlang", "Elixir", "Clojure", "Groovy", "VB.NET", "F#",
+                "Objective-C", "Dart", "Lua", "Coffeescript", "Assembly", "VBA"
+            ],
+            "frameworks": [
+                "Django", "Flask", "FastAPI", "Spring", "Spring Boot", "Express", "NestJS", "Fastify",
+                "React", "Angular", "Vue", "Svelte", "Next.js", "Remix", "SvelteKit",
+                "PyTorch", "TensorFlow", "Keras", "JAX", "Scikit-learn", "Pandas", "NumPy",
+                "Polars", "H2O.ai", "XGBoost", "LightGBM", "CatBoost",
+                "Rails", "Laravel", "Symfony", "Django REST", "GraphQL",
+                "Pytest", "Jest", "Mocha", "Jasmine", "JUnit", "TestNG", "Mockito",
+                "Selenium", "Cypress", "Playwright", "RxJava", "Coroutines", "Compose", "Jetpack",
+                "Hibernate", "JPA", "Sequelize", "TypeORM", "Prisma", "SQLAlchemy",
+                "Maven", "Gradle", "npm", "yarn", "pip", "conda", "cargo",
+                "MVVM", "MVP", "MVI", "CLEAN", "Hexagonal"
+            ],
+            "mobile": [
+                "Android", "iOS", "React Native", "Flutter", "Kotlin", "Swift", "Objective-C",
+                "Xamarin", "NativeScript", "Ionic", "PhoneGap", "Cordova",
+                "Jetpack Compose", "SwiftUI", "UIKit", "AppKit",
+                "Firebase", "Realm", "SQLite", "Room", "CoreData"
+            ],
+            "infrastructure": [
+                "Docker", "Kubernetes", "Git", "GitHub", "GitLab", "Bitbucket", "Jenkins", "GitLab CI",
+                "GitHub Actions", "CircleCI", "Travis CI", "Azure Pipelines",
+                "Terraform", "Ansible", "Puppet", "Chef", "CloudFormation",
+                "Nginx", "Apache", "IIS", "Tomcat", "JBoss",
+                "Linux", "Windows", "macOS", "Ubuntu", "CentOS", "RHEL", "Alpine"
+            ],
+            "cloud": [
+                "AWS", "EC2", "S3", "Lambda", "RDS", "DynamoDB", "SQS", "SNS", "CloudFormation",
+                "Azure", "Virtual Machines", "App Service", "Blob Storage", "SQL Database",
+                "Azure Functions", "Azure DevOps",
+                "GCP", "Compute Engine", "Cloud Storage", "Cloud SQL", "Cloud Functions", "BigQuery"
+            ],
+            "databases": [
+                "PostgreSQL", "MySQL", "MongoDB", "Cassandra", "Redis", "Memcached",
+                "Elasticsearch", "Solr", "Neo4j", "DynamoDB", "Firestore", "MariaDB",
+                "Oracle", "SQL Server", "Snowflake", "BigQuery", "Redshift", "Athena",
+                "ClickHouse", "Prometheus", "InfluxDB", "TimescaleDB", "Couchbase"
+            ],
+            "messaging": [
+                "Kafka", "RabbitMQ", "ActiveMQ", "Redis Streams", "ZeroMQ", "gRPC",
+                "Apache Pulsar", "NATS", "Amazon SQS", "Amazon SNS", "Google Pub/Sub",
+                "Azure Service Bus", "Azure Event Hub", "AWS Kinesis"
+            ],
+            "monitoring": [
+                "Prometheus", "Grafana", "Datadog", "New Relic", "Splunk", "ELK Stack",
+                "Elasticsearch", "Kibana", "Logstash", "Jaeger", "Zipkin", "Fluentd",
+                "PagerDuty", "CloudWatch", "StackDriver", "Dynatrace", "AppDynamics",
+                "Sentry", "Rollbar", "Airbrake", "Bugsnag"
+            ],
+            "other": [
+                "Agile", "Scrum", "Kanban", "REST API", "GraphQL", "gRPC", "OAuth", "JWT", "SAML",
+                "SSL", "TLS", "HTTPS", "HTTP/2", "WebSocket", "WebAssembly",
+                "Machine Learning", "Deep Learning", "NLP", "Computer Vision", "Data Science",
+                "Big Data", "Hadoop", "Spark", "Hive", "Pig",
+                "BDD", "TDD", "Microservices", "Monolith", "Serverless",
+                "CI/CD", "DevOps", "SRE", "Observability", "Infrastructure as Code"
+            ]
+        }        
+    
+    def _extract_text_from_pdf_with_ocr(self, pdf_content):
+        """Extract text from PDF using OCR with improved preprocessing"""
         try:
-            doc = pymupdf.open(stream=pdf_file.read() if hasattr(pdf_file, 'read') else pdf_file, filetype="pdf")
+            if hasattr(pdf_content, 'read'):
+                pdf_content = pdf_content.read()
+
+            doc = pymupdf.open(stream=pdf_content, filetype="pdf")
+            all_text = ""
+
+            for page_num, page in enumerate(doc):
+                print(f"📄 OCR: page {page_num + 1}...")
+
+                # 3x zoom instead of 2x
+                mat = pymupdf.Matrix(3, 3)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+
+                # Convert to PIL Image
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                img = img.convert('L')
+
+                # PREPROCESSING - IMPROVED
+                # 1. Contrast - 2.5x instead of 2x
+                contrast = ImageEnhance.Contrast(img)
+                img = contrast.enhance(2.5)
+
+                # 2. Sharpness - NEW
+                sharpness = ImageEnhance.Sharpness(img)
+                img = sharpness.enhance(2.0)
+
+                # 3. Brightness - NEW
+                brightness = ImageEnhance.Brightness(img)
+                img = brightness.enhance(1.1)
+
+                # 4. Median Filter to remove noise - NEW
+                img = img.filter(ImageFilter.MedianFilter(size=3))
+
+                # 5. Thresholding - black and white for better OCR - NEW
+                img_array = np.array(img)
+                threshold_value = 150
+                binary_array = np.where(img_array > threshold_value, 255, 0).astype(np.uint8)
+                img = Image.fromarray(binary_array)
+
+                # OCR with better parameters
+                text = pytesseract.image_to_string(
+                    img, 
+                    lang='pol+eng',
+                    config='--psm 6 --oem 3'  # PSM 6: uniform block, OEM 3: both engines
+                )
+
+                all_text += text + "\n"
+
+            doc.close()
+            return all_text
+
+        except Exception as e:
+            print(f"❌ OCR error: {e}")
+            return ""   
+     
+    def extract_text_from_pdf(self, pdf_file):
+        """Extract text from PDF file or BytesIO object - with OCR fallback for scanned PDFs"""
+        try:
+            if hasattr(pdf_file, 'read'):
+                pdf_content = pdf_file.read()
+            else:
+                pdf_content = pdf_file
+
+            doc = pymupdf.open(stream=pdf_content, filetype="pdf")
             text = ""
+
+            # Najpierw spróbuj standardową ekstrakcję tekstu
             for page in doc:
                 text += page.get_text()
+
             doc.close()
+
+            # Jeśli tekst jest praktycznie pusty (<50 znaków), to prawdopodobnie skan - użyj OCR
+            if len(text.strip()) < 50:
+                print("⚠️ Detected scanned PDF (no selectable text), using OCR...")
+                return self._extract_text_from_pdf_with_ocr(pdf_content)
+
             return text
+
         except Exception as e:
-            return "Error reading PDF: " + str(e)
+            print(f"Error reading PDF: {e}")
+            # Fallback to OCR
+            if 'pdf_content' in locals():
+                return self._extract_text_from_pdf_with_ocr(pdf_content)
+            else:
+                return self._extract_text_from_pdf_with_ocr(pdf_file)
     
     def extract_text_from_docx(self, docx_file):
         """Extract text from DOCX file"""
@@ -113,23 +256,23 @@ class CVAnalyzer:
     
     def analyze_cv_for_template(self, cv_text, client_requirements, custom_prompt="", output_language='auto'):
         """
-        Analyze CV and generate structured template
+        Analyze CV and generate structured template with improved extraction
         output_language: 'auto', 'pl', or 'en'
         """
         cv_language = self.detect_language(cv_text)
-        
+
         # Determine final output language
         if output_language == 'auto':
             final_language = cv_language
         else:
             final_language = output_language
-        
+
         if custom_prompt:
             prompt = custom_prompt.replace("{cv_text}", cv_text).replace("{client_requirements}", client_requirements)
         else:
             # Check if translation is needed
             needs_translation = (cv_language != final_language)
-            
+
             if final_language == 'polish':
                 prompt = self._create_polish_prompt(cv_text, client_requirements, needs_translation, cv_language)
             else:
@@ -147,25 +290,25 @@ class CVAnalyzer:
                     'repeat_penalty': 1.1
                 }
             )
-            
+
             analysis = response['message']['content']
-            
+
             try:
                 start_pos = analysis.find('{')
                 end_pos = analysis.rfind('}')
-                
+
                 if start_pos != -1 and end_pos != -1:
                     analysis = analysis[start_pos:end_pos+1]
-                
-                # POPRAWKA: używaj parsed_analysis zamiast parsedfiltered
+
+                # Parse JSON
                 parsed_analysis = json.loads(analysis)
                 parsed_analysis['detected_language'] = cv_language
                 parsed_analysis['output_language'] = final_language
                 return parsed_analysis
-                
+
             except json.JSONDecodeError as je:
                 return {"raw_analysis": analysis, "parsing_error": "Failed to parse JSON: " + str(je)}
-                
+
         except Exception as e:
             return {"error": "Error during LLM analysis: " + str(e)}
     
@@ -333,106 +476,451 @@ class CVAnalyzer:
             return response['message']['content']
         except Exception as e:
             return f"Error: {str(e)}"
+        
+    def _extract_technologies_from_cv(self, cv_text):
+        """
+        STEP 1: Extract ALL technologies from CV text
+        This ensures we don't miss anything
+        """
+        
+        prompt = f"""You are a technology extraction specialist.
+
+    CV TEXT:
+    {cv_text}
+
+    TASK: Extract EVERY technology, tool, framework, library, methodology mentioned in this CV.
+
+    Look for:
+    - Programming languages (Python, Java, Kotlin, C#, etc.)
+    - Frameworks (Django, React, Spring, RxJava, Coroutines, etc.)
+    - Libraries (Pandas, NumPy, Mockito, JUnit, etc.)
+    - Tools (Git, Docker, Jenkins, etc.)
+    - Databases (PostgreSQL, MongoDB, Redis, etc.)
+    - Cloud (AWS, Azure, GCP, etc.)
+    - Mobile (Android, iOS, Jetpack Compose, SwiftUI, etc.)
+    - Architecture patterns (MVVM, MVP, MVI, Clean, etc.)
+    - DI frameworks (Hilt, Koin, Dagger, etc.)
+    - Testing frameworks (Mockito, Espresso, JUnit, etc.)
+    - Methodologies (Agile, Scrum, BDD, TDD, etc.)
+    - Any other technical terms
+
+    CRITICAL: Extract ONLY what is LITERALLY written in CV. Do not infer or add anything.
+
+    Return ONLY a comma-separated list of technologies, nothing else.
+
+    TECHNOLOGIES:"""
+
+        try:
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[{'role': 'user', 'content': prompt}],
+                options={
+                    'temperature': 0.1,
+                    'num_predict': 800,
+                    'top_p': 0.9
+                }
+            )
+            
+            tech_text = response['message']['content'].strip()
+            
+            # Parse comma-separated list
+            tech_list = [t.strip() for t in tech_text.split(',') if t.strip()]
+            
+            # Clean up
+            tech_list = [t for t in tech_list if len(t) > 1 and len(t) < 50]
+            
+            print(f"🔍 Extracted {len(tech_list)} technologies: {tech_list[:10]}...")
+            
+            return tech_list
+            
+        except Exception as e:
+            print(f"❌ Technology extraction error: {e}")
+            return []
+
+
+    def _categorize_technologies(self, tech_list):
+        """
+        STEP 2: Categorize extracted technologies into proper sections
+        """
+        
+        categorized = {
+            "programming_scripting": [],
+            "frameworks_libraries": [],
+            "infrastructure_devops": [],
+            "cloud": [],
+            "databases_messaging": [],
+            "mobile": [],
+            "monitoring": [],
+            "other": []
+        }
+        
+        # Categorize based on knowledge base
+        for tech in tech_list:
+            tech_lower = tech.lower()
+            placed = False
+            
+            # Programming
+            for known_tech in self.TECH_KNOWLEDGE_BASE.get("programming", []):
+                if known_tech.lower() == tech_lower or tech_lower in known_tech.lower():
+                    categorized["programming_scripting"].append(tech)
+                    placed = True
+                    break
+            
+            if placed:
+                continue
+                
+            # Frameworks
+            for known_tech in self.TECH_KNOWLEDGE_BASE.get("frameworks", []):
+                if known_tech.lower() == tech_lower or tech_lower in known_tech.lower():
+                    categorized["frameworks_libraries"].append(tech)
+                    placed = True
+                    break
+            
+            if placed:
+                continue
+                
+            # Mobile
+            for known_tech in self.TECH_KNOWLEDGE_BASE.get("mobile", []):
+                if known_tech.lower() == tech_lower or tech_lower in known_tech.lower():
+                    categorized["mobile"].append(tech)
+                    placed = True
+                    break
+            
+            if placed:
+                continue
+                
+            # Infrastructure
+            for known_tech in self.TECH_KNOWLEDGE_BASE.get("infrastructure", []):
+                if known_tech.lower() == tech_lower or tech_lower in known_tech.lower():
+                    categorized["infrastructure_devops"].append(tech)
+                    placed = True
+                    break
+            
+            if placed:
+                continue
+                
+            # Cloud
+            for known_tech in self.TECH_KNOWLEDGE_BASE.get("cloud", []):
+                if known_tech.lower() == tech_lower or tech_lower in known_tech.lower():
+                    categorized["cloud"].append(tech)
+                    placed = True
+                    break
+            
+            if placed:
+                continue
+                
+            # Databases + Messaging
+            for known_tech in (self.TECH_KNOWLEDGE_BASE.get("databases", []) + 
+                            self.TECH_KNOWLEDGE_BASE.get("messaging", [])):
+                if known_tech.lower() == tech_lower or tech_lower in known_tech.lower():
+                    categorized["databases_messaging"].append(tech)
+                    placed = True
+                    break
+            
+            if placed:
+                continue
+                
+            # Monitoring
+            for known_tech in self.TECH_KNOWLEDGE_BASE.get("monitoring", []):
+                if known_tech.lower() == tech_lower or tech_lower in known_tech.lower():
+                    categorized["monitoring"].append(tech)
+                    placed = True
+                    break
+            
+            if placed:
+                continue
+                
+            # Other
+            for known_tech in self.TECH_KNOWLEDGE_BASE.get("other", []):
+                if known_tech.lower() == tech_lower or tech_lower in known_tech.lower():
+                    categorized["other"].append(tech)
+                    placed = True
+                    break
+            
+            # If not categorized, put in frameworks (most common)
+            if not placed:
+                categorized["frameworks_libraries"].append(tech)
+        
+        # Merge mobile into frameworks if mobile-specific
+        if categorized["mobile"]:
+            categorized["frameworks_libraries"].extend(categorized["mobile"])
+            categorized["mobile"] = []
+        
+        print(f"📊 Categorized: programming={len(categorized['programming_scripting'])}, "
+            f"frameworks={len(categorized['frameworks_libraries'])}, "
+            f"infra={len(categorized['infrastructure_devops'])}, "
+            f"db={len(categorized['databases_messaging'])}")
+        
+        return categorized
+
+    def _extract_work_experience_details(self, cv_text):
+        """
+        STEP 1.5: Extract ONLY actual work experience and projects (NOT certifications)
+        """
+        
+        prompt = f"""You are a work experience extraction specialist.
+
+    CV TEXT:
+    {cv_text}
+
+    TASK: Extract ONLY actual work experience, job positions, and projects.
+
+    DO NOT extract:
+    - Certifications or courses
+    - Language certificates (TOEIC, etc.)
+    - Educational achievements
+    - Additional information sections
+
+    EXTRACT ONLY:
+    - Full-time/part-time employment positions
+    - Contract work
+    - Freelance projects
+    - Internships (if actual work experience)
+    - Project-based work with companies
+
+    For EACH actual work position or project, extract:
+    - Period: year range (e.g., "2016-2020", "2020-Present", or "2016-2020" if only year mentioned)
+    - Company: actual company name OR "Various clients" if multiple, OR project name if no company
+    - Position: job title or role (e.g., "Senior Android Developer", "Android Developer")
+    - Description: brief project/work description
+    - Technologies: list of technologies used (comma-separated)
+
+    CRITICAL RULES:
+    1. If CV shows projects under one employment period, use that period for all projects
+    2. If no company name, use project name or "Project-based work"
+    3. DO NOT create separate entries for certifications
+    4. Group related projects under the same employment period
+    5. Extract technology stack for each project
+
+    Format your response as:
+    Period | Company | Position | Description | Technologies
+
+    Example:
+    2016-2020 | Tech Company | Senior Android Developer | Developed mobile banking app | Kotlin, RxJava, MVVM
+    2020-Present | International Bank | Lead Android Developer | Fleet management system | Kotlin, Jetpack Compose, Git
+
+    WORK EXPERIENCE ONLY:"""
+
+        try:
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[{'role': 'user', 'content': prompt}],
+                options={
+                    'temperature': 0.1,
+                    'num_predict': 2000,
+                    'top_p': 0.9
+                }
+            )
+            
+            exp_text = response['message']['content'].strip()
+            
+            # Parse the response
+            experiences = []
+            for line in exp_text.split('\n'):
+                line = line.strip()
+                if '|' in line and len(line) > 20:
+                    # Skip header lines
+                    if 'Period' in line or 'Company' in line:
+                        continue
+                        
+                    parts = [p.strip() for p in line.split('|')]
+                    if len(parts) >= 3:
+                        # Validate it's not a certification
+                        position = parts[2] if len(parts) > 2 else ''
+                        if any(cert_word in position.lower() for cert_word in ['certificate', 'certification', 'toeic', 'course']):
+                            continue  # Skip certifications
+                        
+                        experiences.append({
+                            'period': parts[0] if len(parts) > 0 and parts[0] else 'Not specified',
+                            'company': parts[1] if len(parts) > 1 and parts[1] else 'Not specified',
+                            'position': parts[2] if len(parts) > 2 and parts[2] else 'Not specified',
+                            'description': parts[3] if len(parts) > 3 else '',
+                            'technologies': [t.strip() for t in parts[4].split(',')] if len(parts) > 4 else []
+                        })
+            
+            # Filter out invalid entries
+            experiences = [exp for exp in experiences if 
+                        exp['position'].lower() not in ['not specified', 'certificate', 'certification'] and
+                        'certificate' not in exp['description'].lower()[:50]]
+            
+            print(f"💼 Extracted {len(experiences)} valid work experience entries")
+            return experiences
+            
+        except Exception as e:
+            print(f"❌ Work experience extraction error: {e}")
+            return []
 
     def _create_polish_prompt(self, cv_text, client_requirements, needs_translation=False, source_lang='polish'):
-        """Polish prompt - complete with all fields populated"""
-        prompt = "Jestes ekspertem HR specjalizujacym sie w analizie CV.\n\n"
+        """ENHANCED Polish prompt with pre-extracted technologies AND work experience"""
+        
+        # STEP 1: Extract technologies first
+        extracted_tech = self._extract_technologies_from_cv(cv_text)
+        categorized_tech = self._categorize_technologies(extracted_tech)
+        
+        # STEP 1.5: Extract work experience details
+        extracted_work_exp = self._extract_work_experience_details(cv_text)
+        
+        prompt = "Jesteś ekspertem HR specjalizującym się w analizie CV.\n\n"
         
         if needs_translation:
-            prompt += f"WAZNE: CV jest napisane po {self._get_language_name(source_lang, 'pl')}. "
-            prompt += "Przeanalizuj je i wygeneruj raport PO POLSKU, tlumaczac wszystkie informacje.\n\n"
+            prompt += f"WAŻNE: CV jest napisane po {self._get_language_name(source_lang, 'pl')}. "
+            prompt += "Przeanalizuj je i wygeneruj raport PO POLSKU, tłumacząc wszystkie informacje.\n\n"
         
-        prompt += "TRESC CV KANDYDATA:\n" + cv_text + "\n\n"
+        prompt += "TREŚĆ CV KANDYDATA:\n" + cv_text + "\n\n"
         prompt += "WYMAGANIA KLIENTA:\n" + client_requirements + "\n\n"
         
-        prompt += "Wygeneruj szczegolowy raport w formacie JSON PO POLSKU. WSZYSTKIE pola ponizej MUSZA byc wypelnione!\n"
+        # CRITICAL: Provide extracted technologies
+        prompt += "=" * 80 + "\n"
+        prompt += "TECHNOLOGIE WYEKSTRAHOWANE Z CV (UŻYJ ICH WSZYSTKICH!):\n"
+        prompt += "=" * 80 + "\n\n"
+        
+        for category, techs in categorized_tech.items():
+            if techs:
+                prompt += f"{category}: {', '.join(techs)}\n"
+        
+        prompt += "\n" + "=" * 80 + "\n"
+        
+        # NEW: Provide extracted work experience
+        prompt += "DOŚWIADCZENIE ZAWODOWE WYEKSTRAHOWANE Z CV (UŻYJ WSZYSTKICH!):\n"
+        prompt += "=" * 80 + "\n\n"
+        
+        for idx, exp in enumerate(extracted_work_exp, 1):
+            prompt += f"{idx}. {exp['period']} - {exp['company']} - {exp['position']}\n"
+            if exp['description']:
+                prompt += f"   Opis: {exp['description']}\n"
+            if exp['technologies']:
+                prompt += f"   Technologie: {', '.join([str(t) for t in exp['technologies']])}\n"
+            prompt += "\n"
+        
+        prompt += "=" * 80 + "\n\n"
+        
+        prompt += "Wygeneruj szczegółowy raport w formacie JSON PO POLSKU:\n"
         prompt += '{\n'
         
-        prompt += '  "podstawowe_dane": {\n'
-        prompt += '    "imie_nazwisko": "Wyciagnij z CV",\n'
-        prompt += '    "email": "Email z CV lub: nie podano",\n'
-        prompt += '    "telefon": "Telefon z CV lub: nie podano"\n'
-        prompt += '  },\n'
+        # Basic data
+        prompt += ' "podstawowe_dane": {\n'
+        prompt += ' "imie_nazwisko": "Wyciągnij z CV",\n'
+        prompt += ' "email": "Email z CV lub: nie podano",\n'
+        prompt += ' "telefon": "Telefon z CV lub: nie podano"\n'
+        prompt += ' },\n'
         
-        prompt += '  "lokalizacja_i_dostepnosc": {\n'
-        prompt += '    "lokalizacja": "Miasto/Kraj z CV",\n'
-        prompt += '    "preferencja_pracy_zdalnej": "Zdalna/Hybrydowa/Stacjonarna lub: nieokreslona",\n'
-        prompt += '    "dostepnosc": "Okres wypowiedzenia lub: nieokreslona"\n'
-        prompt += '  },\n'
+        # Location
+        prompt += ' "lokalizacja_i_dostepnosc": {\n'
+        prompt += ' "lokalizacja": "Miasto/Kraj z CV",\n'
+        prompt += ' "preferencja_pracy_zdalnej": "Zdalna/Hybrydowa/Stacjonarna lub: nieokreślona",\n'
+        prompt += ' "dostepnosc": "Okres wypowiedzenia lub: nieokreślona"\n'
+        prompt += ' },\n'
         
-        prompt += '  "podsumowanie_profilu": "WAZNE: Napisz WLASNA analize 3-5 zdan (nie kopiuj z CV!). Uwzglednij: doswiadczenie, kompetencje, dopasowanie do wymagan, rekomendacje (polecam/nie polecam).",\n'
+        # Profile summary
+        prompt += ' "podsumowanie_profilu": "WAŻNE: Napisz WŁASNĄ analizę 3-5 zdań. Uwzględnij: doświadczenie, kompetencje, dopasowanie do wymagań, rekomendacje.",\n'
         
-        prompt += '  "doswiadczenie_zawodowe": [\n'
-        prompt += '    {\n'
-        prompt += '      "okres": "YYYY - YYYY lub YYYY - Obecnie",\n'
-        prompt += '      "firma": "Nazwa firmy",\n'
-        prompt += '      "stanowisko": "Stanowisko",\n'
-        prompt += '      "kluczowe_osiagniecia": ["Lista osiagniec"],\n'
-        prompt += '      "obowiazki": ["Obowiazki"],\n'
-        prompt += '      "technologie": ["Technologie uzywane"]\n'
-        prompt += '    }\n'
-        prompt += '  ],\n'
+        # Work experience - USE EXTRACTED DATA
+        prompt += ' "doswiadczenie_zawodowe": [\n'
         
-        prompt += '  "wyksztalcenie": [\n'
-        prompt += '    {\n'
-        prompt += '      "uczelnia": "Nazwa uczelni",\n'
-        prompt += '      "stopien": "Licencjat/Magister/Doktor",\n'
-        prompt += '      "kierunek": "Kierunek studiow",\n'
-        prompt += '      "okres": "YYYY - YYYY"\n'
-        prompt += '    }\n'
-        prompt += '  ],\n'
+        prompt += ' "doswiadczenie_zawodowe": [\n'
+
+        if extracted_work_exp:
+            for exp in extracted_work_exp:
+                # Clean up the data
+                company = exp['company'] if exp['company'] != 'Not specified' else 'Nie podano w CV'
+                
+                prompt += '   {\n'
+                prompt += f'     "okres": "{exp["period"]}",\n'
+                prompt += f'     "firma": "{company}",\n'
+                prompt += f'     "stanowisko": "{exp["position"]}",\n'
+                prompt += f'     "kluczowe_osiagniecia": ["{exp["description"]}"],\n'
+                prompt += '     "obowiazki": [],\n'
+                prompt += f'     "technologie": {json.dumps(exp["technologies"], ensure_ascii=False)}\n'
+                prompt += '   },\n'
+        else:
+            # Fallback if extraction fails
+            prompt += '   {\n'
+            prompt += '     "okres": "Wyciągnij z CV",\n'
+            prompt += '     "firma": "Wyciągnij z CV",\n'
+            prompt += '     "stanowisko": "Wyciągnij z CV",\n'
+            prompt += '     "kluczowe_osiagniecia": ["Wyciągnij z CV"],\n'
+            prompt += '     "obowiazki": [],\n'
+            prompt += '     "technologie": ["Wyciągnij z CV"]\n'
+            prompt += '   }\n'
+
+        prompt += ' ],\n'
+        prompt += ' "INSTRUKCJA_DOSWIADCZENIE": "OBOWIĄZKOWE! Wyciągnij WSZYSTKIE projekty i stanowiska. NIE dodawaj certyfikatów do doświadczenia!",\n'
         
-        prompt += '  "certyfikaty_i_kursy": [\n'
-        prompt += '    {\n'
-        prompt += '      "nazwa": "Nazwa certyfikatu/kursu",\n'
-        prompt += '      "typ": "certyfikat lub kurs",\n'
-        prompt += '      "wystawca": "Organizacja/Platforma",\n'
-        prompt += '      "data": "Rok uzyskania"\n'
-        prompt += '    }\n'
-        prompt += '  ],\n'
+        # Education
+        prompt += ' "wyksztalcenie": [\n'
+        prompt += '   {\n'
+        prompt += '     "uczelnia": "Nazwa uczelni",\n'
+        prompt += '     "stopien": "Licencjat/Magister/Doktor",\n'
+        prompt += '     "kierunek": "Kierunek studiów",\n'
+        prompt += '     "okres": "YYYY - YYYY"\n'
+        prompt += '   }\n'
+        prompt += ' ],\n'
         
-        prompt += '  "jezyki_obce": [\n'
-        prompt += '    {"jezyk": "Nazwa jezyka", "poziom": "A1/A2/B1/B2/C1/C2/Ojczysty"}\n'
-        prompt += '  ],\n'
-        prompt += '  "INSTRUKCJA_JEZYKI": "OBOWIAZKOWE! Szukaj wszystkich jezykow w CV. Zawsze dodaj jezyk ojczysty (Polski - Ojczysty jesli CV po polsku). Nie pomijaj!",\n'
+        # Certifications
+        prompt += ' "certyfikaty_i_kursy": [\n'
+        prompt += '   {\n'
+        prompt += '     "nazwa": "Nazwa certyfikatu/kursu",\n'
+        prompt += '     "typ": "certyfikat lub kurs",\n'
+        prompt += '     "wystawca": "Organizacja/Platforma",\n'
+        prompt += '     "data": "Rok uzyskania"\n'
+        prompt += '   }\n'
+        prompt += ' ],\n'
         
-        prompt += '  "umiejetnosci": {\n'
-        prompt += '    "programowanie_skrypty": ["OBOWIAZKOWE! Wyciagnij WSZYSTKIE jezyki programowania z CV: Python, Java, C#, JavaScript, TypeScript, C++, Go, Ruby, PHP, Swift, Kotlin, Bash, PowerShell, itp."],\n'
-        prompt += '    "frameworki_biblioteki": ["Wyciagnij frameworki/biblioteki wymienione w CV: Django, Flask, FastAPI, Spring, Express, NestJS, React, Angular, Vue, PyTorch, TensorFlow, Keras, Pandas, NumPy, Scikit-learn, H2O.ai, itp."],\n'
-        prompt += '    "infrastruktura_devops": ["Docker, Kubernetes, Jenkins, GitLab CI, GitHub Actions, CircleCI, Git, Terraform, Ansible, Puppet, Chef, itp."],\n'
-        prompt += '    "chmura": ["AWS, EC2, S3, Lambda, RDS, Azure, Virtual Machines, Blob Storage, Azure Functions, GCP, itp. - jesli brak: []"],\n'
-        prompt += '    "bazy_kolejki": ["PostgreSQL, MySQL, MongoDB, Cassandra, Redis, Memcached, Kafka, RabbitMQ, Elasticsearch, Solr, itp."],\n'
-        prompt += '    "monitoring": ["Prometheus, Grafana, Datadog, New Relic, ELK Stack, Kibana, Splunk, Fluentd, itp. - jesli brak: []"],\n'
-        prompt += '    "inne": ["Agile, Scrum, Kanban, REST API, GraphQL, gRPC, OAuth, JWT, SAML, Linux, Nginx, Apache, SSL/TLS, itp."]\n'
-        prompt += '  },\n'
-        prompt += '  "INSTRUKCJA_SKILLS": "KRYTYCZNE! Szukaj KAZDEJ technologii w CV - nie pomijaj nic! Wymieniane sa w Skills, Work Experience, Projects. Wyciagaj tylko to co faktycznie jest w CV - NIGDY nie dodawaj udomyslonych!",\n'
+        # Languages
+        prompt += ' "jezyki_obce": [\n'
+        prompt += '   {"jezyk": "Nazwa języka", "poziom": "A1/A2/B1/B2/C1/C2/Ojczysty"}\n'
+        prompt += ' ],\n'
+        prompt += ' "INSTRUKCJA_JEZYKI": "OBOWIĄZKOWE! Szukaj wszystkich języków w CV. Zawsze dodaj język ojczysty.",\n'
         
-        prompt += '  "podsumowanie_technologii": {\n'
-        prompt += '    "opis": "Krotkie podsumowanie glownych technologii kandydata",\n'
-        prompt += '    "glowne_technologie": ["8-10 najwazniejszych technologii"],\n'
-        prompt += '    "lata_doswiadczenia": "X lat doswiadczenia w IT"\n'
-        prompt += '  },\n'
+        # Skills - USE EXTRACTED TECHNOLOGIES
+        prompt += ' "umiejetnosci": {\n'
+        prompt += f'   "programowanie_skrypty": {json.dumps(categorized_tech["programming_scripting"], ensure_ascii=False)},\n'
+        prompt += f'   "frameworki_biblioteki": {json.dumps(categorized_tech["frameworks_libraries"], ensure_ascii=False)},\n'
+        prompt += f'   "infrastruktura_devops": {json.dumps(categorized_tech["infrastructure_devops"], ensure_ascii=False)},\n'
+        prompt += f'   "chmura": {json.dumps(categorized_tech["cloud"], ensure_ascii=False)},\n'
+        prompt += f'   "bazy_kolejki": {json.dumps(categorized_tech["databases_messaging"], ensure_ascii=False)},\n'
+        prompt += f'   "monitoring": {json.dumps(categorized_tech["monitoring"], ensure_ascii=False)},\n'
+        prompt += f'   "inne": {json.dumps(categorized_tech["other"], ensure_ascii=False)}\n'
+        prompt += ' },\n'
         
-        prompt += '  "dopasowanie_do_wymagan": {\n'
-        prompt += '    "mocne_strony": ["Minimum 3 mocne strony"],\n'
-        prompt += '    "poziom_dopasowania": "wysoki/sredni/niski",\n'
-        prompt += '    "uzasadnienie": "Szczegolowe uzasadnienie",\n'
-        prompt += '    "rekomendacja": "TAK/NIE"\n'
-        prompt += '  }\n'
+        # Tech stack summary
+        prompt += ' "podsumowanie_technologii": {\n'
+        prompt += '   "opis": "Krótkie podsumowanie głównych technologii kandydata",\n'
+        prompt += '   "glowne_technologie": ["8-10 najważniejszych technologii z powyższej listy"],\n'
+        prompt += '   "lata_doswiadczenia": "X lat doświadczenia w IT"\n'
+        prompt += ' },\n'
+        
+        # Matching
+        prompt += ' "dopasowanie_do_wymagan": {\n'
+        prompt += '   "mocne_strony": ["Minimum 3 mocne strony"],\n'
+        prompt += '   "poziom_dopasowania": "wysoki/sredni/niski",\n'
+        prompt += '   "uzasadnienie": "Szczegółowe uzasadnienie",\n'
+        prompt += '   "rekomendacja": "TAK/NIE"\n'
+        prompt += ' }\n'
         prompt += '}\n\n'
         
-        prompt += "ULTRA-KRYTYCZNE INSTRUKCJE:\n"
-        prompt += "1. JEZYKI: Szukaj KAZDEGO jezyka wymienionego. Zawsze dodaj jezyk ojczysty!\n"
-        prompt += "2. SKILLS: Wyciagnij WSZYSTKIE technologie z CV - nie pomijaj zadnej!\n"
-        prompt += "3. CERTYFIKATY: Szukaj certyfikatow, kursow, szkolen - wszystko!\n"
-        prompt += "4. TYLKO Z CV: Wyciagaj TYLKO co jest napisane - bez inferowania!\n"
-        prompt += "5. ZWROC JSON: Poprawny JSON z WSZYSTKIMI polami wypelnionymi!\n"
+        prompt += "=" * 80 + "\n"
+        prompt += "KRYTYCZNE INSTRUKCJE:\n"
+        prompt += "=" * 80 + "\n\n"
+        prompt += "1. UŻYJ WSZYSTKICH technologii z listy powyżej w sekcji 'umiejetnosci'\n"
+        prompt += "2. UŻYJ WSZYSTKICH pozycji doświadczenia zawodowego z listy powyżej\n"
+        prompt += "3. NIE łącz projektów - każdy projekt osobno!\n"
+        prompt += "4. NIE DODAWAJ niczego czego nie ma w CV\n"
+        prompt += "5. ZWRÓĆ poprawny JSON z WSZYSTKIMI polami wypełnionymi\n"
+        prompt += "6. Jeśli brak wykształcenia/certyfikatów, zwróć []\n"
+        prompt += "7. Zawsze dodaj język ojczysty do 'jezyki_obce'\n\n"
         
         return prompt
 
+
     
     def _create_english_prompt(self, cv_text, client_requirements, needs_translation=False, source_lang='english'):
-        """Updated English prompt - full anti-hallucination version"""
+        """ENHANCED English prompt with pre-extracted technologies"""
+        
+        # STEP 1: Extract technologies first
+        extracted_tech = self._extract_technologies_from_cv(cv_text)
+        categorized_tech = self._categorize_technologies(extracted_tech)
+        
         prompt = "You are an expert HR professional specializing in CV analysis.\n\n"
         
         if needs_translation:
@@ -442,146 +930,111 @@ class CVAnalyzer:
         prompt += "CV TEXT:\n" + cv_text + "\n\n"
         prompt += "CLIENT REQUIREMENTS:\n" + client_requirements + "\n\n"
         
+        # CRITICAL: Provide extracted technologies
+        prompt += "=" * 80 + "\n"
+        prompt += "TECHNOLOGIES EXTRACTED FROM CV (USE ALL OF THEM!):\n"
+        prompt += "=" * 80 + "\n\n"
+        
+        for category, techs in categorized_tech.items():
+            if techs:
+                prompt += f"{category}: {', '.join(techs)}\n"
+        
+        prompt += "\n" + "=" * 80 + "\n\n"
+        
         prompt += "Generate a comprehensive report in JSON format IN ENGLISH:\n"
         prompt += '{\n'
         
-        # Podstawowe dane
-        prompt += '  "basic_data": {\n'
-        prompt += '    "full_name": "Extract name and surname from CV",\n'
-        prompt += '    "email": "Email or: not provided",\n'
-        prompt += '    "phone": "Phone or: not provided"\n'
-        prompt += '  },\n'
+        # Basic data
+        prompt += ' "basic_data": {\n'
+        prompt += ' "full_name": "Extract name and surname from CV",\n'
+        prompt += ' "email": "Email or: not provided",\n'
+        prompt += ' "phone": "Phone or: not provided"\n'
+        prompt += ' },\n'
         
         # Location
-        prompt += '  "location_and_availability": {\n'
-        prompt += '    "location": "City/Country from CV",\n'
-        prompt += '    "remote_work_preference": "Remote/Hybrid/On-site or: not specified",\n'
-        prompt += '    "availability": "Notice period or: not specified"\n'
-        prompt += '  },\n'
+        prompt += ' "location_and_availability": {\n'
+        prompt += ' "location": "City/Country from CV",\n'
+        prompt += ' "remote_work_preference": "Remote/Hybrid/On-site or: not specified",\n'
+        prompt += ' "availability": "Notice period or: not specified"\n'
+        prompt += ' },\n'
         
         # Profile summary
-        prompt += '  "profile_summary": "IMPORTANT: Write YOUR OWN analysis (3-5 sentences), do NOT copy from CV. Include: experience, competencies, match to requirements, recommendation (recommend/do not recommend)",\n'
+        prompt += ' "profile_summary": "IMPORTANT: Write YOUR OWN analysis (3-5 sentences). Include: experience, competencies, match to requirements, recommendation.",\n'
         
         # Work experience
-        prompt += '  "work_experience": [\n'
-        prompt += '    {\n'
-        prompt += '      "period": "YYYY - YYYY or YYYY - Present",\n'
-        prompt += '      "company": "Company name",\n'
-        prompt += '      "position": "Position title",\n'
-        prompt += '      "key_achievements": ["List of achievements with specific numbers/results"],\n'
-        prompt += '      "responsibilities": ["Optional - detailed responsibilities"],\n'
-        prompt += '      "technologies": ["MANDATORY - technologies used in this period"]\n'
-        prompt += '    }\n'
-        prompt += '  ],\n'
+        prompt += ' "work_experience": [\n'
+        prompt += ' {\n'
+        prompt += ' "period": "YYYY - YYYY or YYYY - Present",\n'
+        prompt += ' "company": "Company name",\n'
+        prompt += ' "position": "Position title",\n'
+        prompt += ' "key_achievements": ["List of achievements with specific numbers/results"],\n'
+        prompt += ' "responsibilities": ["Optional - detailed responsibilities"],\n'
+        prompt += ' "technologies": ["Technologies used in this period"]\n'
+        prompt += ' }\n'
+        prompt += ' ],\n'
         
         # Education
-        prompt += '  "education": [\n'
-        prompt += '    {\n'
-        prompt += '      "institution": "University name",\n'
-        prompt += '      "degree": "Bachelor/Master/PhD",\n'
-        prompt += '      "field": "Field of study",\n'
-        prompt += '      "period": "YYYY - YYYY"\n'
-        prompt += '    }\n'
-        prompt += '  ],\n'
-        prompt += '  "NOTE_EDUCATION": "If no education, return [] - NEVER skip this section!",\n'
+        prompt += ' "education": [\n'
+        prompt += ' {\n'
+        prompt += ' "institution": "University name",\n'
+        prompt += ' "degree": "Bachelor/Master/PhD",\n'
+        prompt += ' "field": "Field of study",\n'
+        prompt += ' "period": "YYYY - YYYY"\n'
+        prompt += ' }\n'
+        prompt += ' ],\n'
         
-        # Certifications and Courses
-        prompt += '  "certifications_and_courses": [\n'
-        prompt += '    {\n'
-        prompt += '      "name": "Certification or course name",\n'
-        prompt += '      "type": "certification or course",\n'
-        prompt += '      "issuer": "Organization/Platform (AWS, Coursera, Udemy, edX)",\n'
-        prompt += '      "date": "Year"\n'
-        prompt += '    }\n'
-        prompt += '  ],\n'
-        prompt += '  "NOTE_CERTS": "Search for: professional certifications, online courses, training, workshops, bootcamps. If none, return []",\n'
+        # Certifications
+        prompt += ' "certifications_and_courses": [\n'
+        prompt += ' {\n'
+        prompt += ' "name": "Certification or course name",\n'
+        prompt += ' "type": "certification or course",\n'
+        prompt += ' "issuer": "Organization/Platform",\n'
+        prompt += ' "date": "Year"\n'
+        prompt += ' }\n'
+        prompt += ' ],\n'
         
         # Languages
-        prompt += '  "languages": [\n'
-        prompt += '    {"language": "Language name", "level": "A1/A2/B1/B2/C1/C2/Native"}\n'
-        prompt += '  ],\n'
-        prompt += '  "NOTE_LANGS": "ALWAYS add at least the native language. If CV is in English: add English - Native",\n'
+        prompt += ' "languages": [\n'
+        prompt += ' {"language": "Language name", "level": "A1/A2/B1/B2/C1/C2/Native"}\n'
+        prompt += ' ],\n'
         
-        # Skills
-        prompt += '  "skills": {\n'
-        prompt += '    "programming_scripting": ["MANDATORY! Python, Java, C#, JavaScript, TypeScript, C++, Go, etc. NEVER empty!"],\n'
-        prompt += '    "frameworks_libraries": ["Django, Flask, React, Angular, Spring, PyTorch, TensorFlow, Pandas, etc."],\n'
-        prompt += '    "infrastructure_devops": ["Docker, Kubernetes, Git, Jenkins, GitLab CI, Terraform, Ansible, etc."],\n'
-        prompt += '    "cloud": ["AWS, Azure, GCP, EC2, S3, Lambda, etc. - if none: []"],\n'
-        prompt += '    "databases_messaging": ["PostgreSQL, MySQL, MongoDB, Redis, Kafka, RabbitMQ, Elasticsearch, etc."],\n'
-        prompt += '    "monitoring": ["Prometheus, Grafana, ELK Stack, Datadog, etc. - if none: []"],\n'
-        prompt += '    "other": ["Agile, Scrum, REST API, GraphQL, Linux, OAuth, JWT, etc."]\n'
-        prompt += '  },\n'
+        # Skills - USE EXTRACTED TECHNOLOGIES
+        prompt += ' "skills": {\n'
+        prompt += f' "programming_scripting": {json.dumps(categorized_tech["programming_scripting"])},\n'
+        prompt += f' "frameworks_libraries": {json.dumps(categorized_tech["frameworks_libraries"])},\n'
+        prompt += f' "infrastructure_devops": {json.dumps(categorized_tech["infrastructure_devops"])},\n'
+        prompt += f' "cloud": {json.dumps(categorized_tech["cloud"])},\n'
+        prompt += f' "databases_messaging": {json.dumps(categorized_tech["databases_messaging"])},\n'
+        prompt += f' "monitoring": {json.dumps(categorized_tech["monitoring"])},\n'
+        prompt += f' "other": {json.dumps(categorized_tech["other"])}\n'
+        prompt += ' },\n'
         
         # Tech stack summary
-        prompt += '  "tech_stack_summary": {\n'
-        prompt += '    "description": "Brief summary of candidate main technologies",\n'
-        prompt += '    "primary_technologies": ["Top 8-10 most important technologies"],\n'
-        prompt += '    "years_of_experience": "X years of IT experience"\n'
-        prompt += '  },\n'
+        prompt += ' "tech_stack_summary": {\n'
+        prompt += ' "description": "Brief summary of candidate main technologies",\n'
+        prompt += ' "primary_technologies": ["Top 8-10 most important technologies from above list"],\n'
+        prompt += ' "years_of_experience": "X years of IT experience"\n'
+        prompt += ' },\n'
         
         # Matching
-        prompt += '  "matching_to_requirements": {\n'
-        prompt += '    "strengths": ["At least 3 strengths related to requirements"],\n'
-        prompt += '    "match_level": "high/medium/low",\n'
-        prompt += '    "justification": "Detailed justification with specific examples",\n'
-        prompt += '    "recommendation": "YES - recommend for further process / NO - does not meet requirements"\n'
-        prompt += '  }\n'
+        prompt += ' "matching_to_requirements": {\n'
+        prompt += ' "strengths": ["At least 3 strengths related to requirements"],\n'
+        prompt += ' "match_level": "high/medium/low",\n'
+        prompt += ' "justification": "Detailed justification with specific examples",\n'
+        prompt += ' "recommendation": "YES - recommend for further process / NO - does not meet requirements"\n'
+        prompt += ' }\n'
         prompt += '}\n\n'
         
-        prompt += "=" * 80 + "\n"
-        prompt += "ULTRA-CRITICAL: EXTRACTION RULES - ZERO HALLUCINATIONS!\n"
-        prompt += "=" * 80 + "\n"
-        prompt += "\n"
-        prompt += "MAIN RULE: Extract ONLY what is LITERALLY written in the CV!\n"
-        prompt += "\n"
-        prompt += "FORBIDDEN PRACTICES:\n"
-        prompt += "- DO NOT infer technologies based on context\n"
-        prompt += "- DO NOT add 'typical' technologies for a role\n"
-        prompt += "- DO NOT use examples from this prompt as real data\n"
-        prompt += "- DO NOT infer technologies from job title\n"
-        prompt += "- If technology is NOT mentioned in CV, DO NOT add it!\n"
-        prompt += "\n"
-        prompt += "EXAMPLES OF MISTAKES (WHAT NOT TO DO):\n"
-        prompt += "[ERROR 1] CV: 'Python' -> YOU ADD: Django, Flask (WRONG! Not in CV!)\n"
-        prompt += "[ERROR 2] CV: 'Backend Developer' -> YOU ADD: JavaScript, Node.js (WRONG!)\n"
-        prompt += "[ERROR 3] CV: 'ML Engineer' -> YOU ADD: TensorFlow, Keras (WRONG if not in CV!)\n"
-        prompt += "[ERROR 4] CV: 'Git' -> YOU ADD: GitHub, GitLab (WRONG! Only Git!)\n"
-        prompt += "\n"
-        prompt += "CORRECT APPROACH:\n"
-        prompt += "[CORRECT 1] CV: 'Python, Java, C#' -> YOU EXTRACT: ['Python', 'Java', 'C#']\n"
-        prompt += "[CORRECT 2] CV: 'PyTorch and H2O.ai' -> YOU EXTRACT: ['PyTorch', 'H2O.ai']\n"
-        prompt += "[CORRECT 3] CV: 'Git (good knowledge)' -> YOU EXTRACT: ['Git']\n"
-        prompt += "[CORRECT 4] CV: 'Bash' -> YOU EXTRACT: ['Bash'] (NOT Linux, NOT Shell!)\n"
-        prompt += "\n"
-        prompt += "SPECIFIC INSTRUCTIONS FOR SKILLS:\n"
-        prompt += "\n"
-        prompt += "1. Programming & Scripting:\n"
-        prompt += "   - Extract ONLY languages that are WRITTEN in CV\n"
-        prompt += "   - If CV says 'Python, Java, C#' -> ONLY these 3!\n"
-        prompt += "   - DO NOT add JavaScript if not in CV\n"
-        prompt += "\n"
-        prompt += "2. Frameworks & Libraries:\n"
-        prompt += "   - Extract ONLY frameworks/libraries MENTIONED in CV\n"
-        prompt += "   - DO NOT infer from languages (Python != Django automatically!)\n"
-        prompt += "   - If CV says 'PyTorch, H2O.ai' -> ONLY these!\n"
-        prompt += "\n"
-        prompt += "3. Infrastructure & DevOps:\n"
-        prompt += "   - Extract ONLY tools WRITTEN in CV\n"
-        prompt += "   - Git != GitHub/GitLab (different things!)\n"
-        prompt += "   - Docker != Kubernetes (don't add automatically!)\n"
-        prompt += "\n"
-        prompt += "VERIFICATION CHECKLIST BEFORE SUBMITTING:\n"
-        prompt += "- Is EVERY technology I listed actually in the CV text?\n"
-        prompt += "- Did I avoid adding 'common' technologies not mentioned?\n"
-        prompt += "- Did I extract EXACTLY what's written, not what 'should' be there?\n"
-        prompt += "- Did I double-check each item?\n"
-        prompt += "\n"
-        prompt += "IF IN DOUBT - DO NOT ADD!\n"
-        prompt += "Better to omit than to hallucinate!\n"
-        prompt += "\n"
+        prompt += "CRITICAL INSTRUCTIONS:\n"
+        prompt += "1. USE ALL technologies from the list above in the 'skills' section\n"
+        prompt += "2. Extract ALL work experience information\n"
+        prompt += "3. DO NOT ADD technologies that are not in the CV\n"
+        prompt += "4. RETURN valid JSON with ALL fields filled\n\n"
         
         return prompt
+
+
+    
     def translate_analysis_dict(analysis_dict, language="pl"):
         """Translate entire analysis dictionary to target language using LLM"""
         if language == "en":
@@ -751,11 +1204,11 @@ class CVAnalyzer:
             output_lang = filtered_analysis.get('output_language', 'english')
             
             translations = {
-                'K E Y H I G H L I G H T S':'G Ł Ó W N E  O S I Ą G N I Ę C I A',
+                'K E Y H I G H L I G H T S':'P O D S U M O W A N I E  P R O F I L U',
                 'E D U C A T I O N': 'W Y K S Z T A Ł C E N I E',
                 'L A N G U A G E S': 'J Ę Z Y K I',
                 'C E R T I F I C A T I O N S': 'C E R T Y F I K A T Y',
-                'P R O F I L E  S U M M A R Y': 'P O D S U M O W A N I E  P R O F I L U',
+                'P R O F I L E  S U M M A R Y': 'R E K O M E N D A C J A',
                 'S K I L L S': 'U M I E J Ę T N O Ś C I',
                 'T E C H  S T A C K': 'T E C H N O L O G I E',
                 'W O R K  E X P E R I E N C E': 'D O Ś W I A D C Z E N I E  Z A W O D O W E',
@@ -864,7 +1317,7 @@ class CVAnalyzer:
 
         # Teraz zawsze wyświetl
         if highlights:
-            pdf.set_font('Arsenal', 'B', 11)
+            pdf.set_font('Arsenal', 'B', 13)
             # Domyślnie 'en' jeśli brak parametru
             pdf_language = language if language else 'en'
             pdf.cell(0, 5, get_section_name('K E Y H I G H L I G H T S'), ln=True)
@@ -879,7 +1332,7 @@ class CVAnalyzer:
             pdf.set_y(y_before + 3)
             pdf.set_x(12.7)
             
-            pdf.set_font('Arsenal', '', 9)
+            pdf.set_font('Arsenal', '', 11)
             
             for highlight in highlights:
                 highlight_text = safe_text(highlight).strip()
@@ -981,10 +1434,12 @@ class CVAnalyzer:
             skill_cats = [
                 ('programowanie_skrypty', 'programming_scripting', 'Programming'),
                 ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks'),
+                ('mobile', 'mobile', 'Mobile'),
                 ('infrastruktura_devops', 'infrastructure_devops', 'Infrastructure'),
                 ('chmura', 'cloud', 'Cloud'),
-                ('bazy_kolejki', 'data_messaging', 'Data'),
+                ('bazy_kolejki', 'databases_messaging', 'Data'),
                 ('monitoring', 'monitoring', 'Monitoring'),
+                ('inne', 'other', 'Other'),
             ]
             
             for pl_key, en_key, label in skill_cats:
@@ -1147,11 +1602,11 @@ class CVAnalyzer:
         def get_section_name(en_name):
             output_lang = filtered_analysis.get('output_language', 'english')
             translations = {
-                'K E Y H I G H L I G H T S': 'G Ł Ó W N E  O S I Ą G N I Ę C I A',
+                'K E Y H I G H L I G H T S': 'P O D S U M O W A N I E  P R O F I L U',
                 'E D U C A T I O N': 'W Y K S Z T A Ł C E N I E',
                 'L A N G U A G E S': 'J Ę Z Y K I',
                 'C E R T I F I C A T I O N S': 'C E R T Y F I K A T Y',
-                'P R O F I L E  S U M M A R Y': 'P O D S U M O W A N I E  P R O F I L U',
+                'P R O F I L E  S U M M A R Y': 'R E K O M E N D A C J A ',
                 'S K I L L S': 'U M I E J Ę T N O Ś C I',
                 'T E C H  S T A C K': 'T E C H N O L O G I E',
                 'W O R K  E X P E R I E N C E': 'D O Ś W I A D C Z E N I E  Z A W O D O W E',
@@ -1334,10 +1789,12 @@ class CVAnalyzer:
             skill_cats = [
                 ('programowanie_skrypty', 'programming_scripting', 'Programming'),
                 ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks'),
+                ('mobile', 'mobile', 'Mobile'),
                 ('infrastruktura_devops', 'infrastructure_devops', 'Infrastructure'),
                 ('chmura', 'cloud', 'Cloud'),
-                ('bazy_kolejki', 'data_messaging', 'Data'),
+                ('bazy_kolejki', 'databases_messaging', 'Data'),
                 ('monitoring', 'monitoring', 'Monitoring'),
+                ('inne', 'other', 'Other'),
             ]
             
             for pl_key, en_key, label in skill_cats:
