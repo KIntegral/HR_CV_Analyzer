@@ -50,6 +50,8 @@ TRANSLATIONS = {
         'tab_structured': '📋 Widok strukturalny',
         'tab_json': '🔍 Szczegółowy JSON',
         'tab_text': '📄 Wyodrębniony tekst',
+        'remotework': 'Praca zdalna',  # ← DODAJ
+        'availability': 'Dostępność',
         'basic_info': '👤 Informacje podstawowe',
         'name': 'Imię i nazwisko',
         'email': 'Email',
@@ -73,7 +75,20 @@ TRANSLATIONS = {
         'download_pdf': '📥 Pobierz raport PDF',
         'download_docx': '📥 Pobierz raport DOCX',
         'download_json': '📥 Pobierz raport JSON',
-        'footer': 'Stworzone z ❤️ przy użyciu Streamlit & Ollama | 2025'
+        'footer': 'Stworzone z ❤️ przy użyciu Streamlit & Ollama | 2025',
+        'basicinfo': 'Informacje podstawowe',
+        'locationavail': 'Lokalizacja i dostępność',
+        'summary': 'Podsumowanie kandydata',
+        'techstack': 'Stack technologiczny',
+        'languagesprog': 'Języki programowania',
+        'frameworks': 'Frameworki',
+        'databases': 'Bazy danych',
+        'tools': 'Narzędzia',
+        'fitassessment': 'Ocena dopasowania',
+        'matchlevel': 'Poziom dopasowania',
+        'recommendation': 'Rekomendacja',
+        'justification': 'Uzasadnienie',
+        'keystrengths': 'Kluczowe mocne strony',
     },
     'en': {
         'title': '📄 CV Analyzer - HR Assistant',
@@ -86,6 +101,8 @@ TRANSLATIONS = {
         'choose_file': 'Choose a CV file',
         'supported_formats': 'Supported formats: PDF, DOCX, DOC, JPG, PNG',
         'file_uploaded': '✅ File uploaded:',
+        'remotework': 'Praca zdalna',  # ← DODAJ
+        'availability': 'Dostępność',
         'filename': 'Filename',
         'filetype': 'FileType',
         'filesize': 'FileSize',
@@ -136,7 +153,20 @@ TRANSLATIONS = {
         'download_pdf': '📥 Download PDF Report',
         'download_docx': '📥 Download DOCX Report',
         'download_json': '📥 Download JSON Report',
-        'footer': 'Made with ❤️ using Streamlit & Ollama | 2025'
+        'footer': 'Made with ❤️ using Streamlit & Ollama | 2025',
+        'basicinfo': 'Basic Information',  # ← DODAJ
+        'locationavail': 'Location & Availability',  # ← DODAJ
+        'summary': 'Candidate Summary',  # ← DODAJ
+        'techstack': 'Technology Stack',  # ← DODAJ
+        'languagesprog': 'Programming Languages',  # ← DODAJ
+        'frameworks': 'Frameworks',  # ← DODAJ
+        'databases': 'Databases',  # ← DODAJ
+        'tools': 'Tools',  # ← DODAJ
+        'fitassessment': 'Fit Assessment',  # ← DODAJ
+        'matchlevel': 'Match Level',  # ← DODAJ
+        'recommendation': 'Recommendation',  # ← DODAJ
+        'justification': 'Justification',  # ← DODAJ
+        'keystrengths': 'Key Strengths',
     }
 }
 
@@ -385,44 +415,48 @@ if st.session_state.analysis_result is not None:
                        f": {out_lang_display} (" + 
                        ("z tłumaczeniem" if ui_language == 'pl' else "translated") + ")")
 
-        if "podstawowe_dane" in analysis:
-            st.subheader(t['basic_info'])
-            dane = analysis["podstawowe_dane"]
+        if 'podstawowe_dane' in analysis or 'basic_data' in analysis:
+            st.subheader(t['basicinfo'])
+            dane = analysis.get('podstawowe_dane') or analysis.get('basic_data')
+            
             col1, col2, col3 = st.columns(3)
-            col1.metric(t['name'], dane.get('imie_nazwisko', 'N/A'))
-            col2.metric(t['email'], dane.get('email', 'N/A'))
-            col3.metric(t['phone'], dane.get('telefon', 'N/A'))
+            col1.metric(t['name'], dane.get('imie_nazwisko') or dane.get('full_name') or dane.get('name') or "NA")
+            col2.metric(t['email'], dane.get('email') or "NA")
+            col3.metric(t['phone'], dane.get('telefon') or dane.get('phone') or "NA")
         
         # Location & Availability
-        if "lokalizacja_i_dostepnosc" in analysis:
-            st.subheader(t['location_avail'])
-            lok = analysis["lokalizacja_i_dostepnosc"]
+        if 'lokalizacja_i_dostepnosc' in analysis or 'location_and_availability' in analysis:
+            st.subheader(t['locationavail'])
+            lok = analysis.get('lokalizacja_i_dostepnosc') or analysis.get('location_and_availability')
+            
             col1, col2, col3 = st.columns(3)
-            col1.metric(t['location'], lok.get('lokalizacja', 'N/A'))
-            col2.metric(t['remote_work'], lok.get('preferencja_pracy_zdalnej', 'N/A'))
-            col3.metric(t['availability'], lok.get('dostepnosc', 'N/A'))
+            col1.metric(t['location'], lok.get('lokalizacja') or lok.get('location') or "NA")
+            col2.metric(t['remotework'], lok.get('preferencja_pracy_zdalnej') or lok.get('remote_work_preference') or "NA")
+            col3.metric(t['availability'], lok.get('dostepnosc') or lok.get('availability') or "NA")
         
         # Candidate Summary
-        if "krotki_opis_kandydata" in analysis:
+        if 'krotki_opis_kandydata' in analysis or 'profile_summary' in analysis:
             st.subheader(t['summary'])
-            st.info(analysis["krotki_opis_kandydata"])
+            summary = analysis.get('krotki_opis_kandydata') or analysis.get('profile_summary') or analysis.get('podsumowanie_profilu')
+            st.info(summary)
         
         # Tech Stack
-        if "stack_technologiczny" in analysis:
-            st.subheader(t['tech_stack'])
-            stack = analysis["stack_technologiczny"]
+        if 'stack_technologiczny' in analysis or 'skills' in analysis or 'umiejetnosci' in analysis:
+            st.subheader(t['techstack'])
+            stack = analysis.get('stack_technologiczny') or analysis.get('skills') or analysis.get('umiejetnosci')
+            
             col1, col2 = st.columns(2)
             with col1:
-                st.write(t['languages_prog'], ", ".join(stack.get('jezyki_programowania', [])))
-                st.write(t['frameworks'], ", ".join(stack.get('frameworki', [])))
+                st.write(f"{t['languagesprog']}: ", ", ".join(stack.get('jezyki_programowania') or stack.get('programming_scripting') or []))
+                st.write(f"{t['frameworks']}: ", ", ".join(stack.get('frameworki') or stack.get('frameworks_libraries') or []))
             with col2:
-                st.write(t['databases'], ", ".join(stack.get('bazy_danych', [])))
-                st.write(t['tools'], ", ".join(stack.get('narzedzia', [])))
+                st.write(f"{t['databases']}: ", ", ".join(stack.get('bazy_danych') or stack.get('databases_messaging') or []))
+                st.write(f"{t['tools']}: ", ", ".join(stack.get('narzedzia') or stack.get('infrastructure_devops') or []))
         
         # Fit Assessment
-        if "dopasowanie_do_wymagan" in analysis:
-            st.subheader(t['fit_assessment'])
-            dop = analysis["dopasowanie_do_wymagan"]
+        if 'dopasowanie_do_wymagan' in analysis or 'matching_to_requirements' in analysis:
+            st.subheader(t['fitassessment'])
+            dop = analysis.get('dopasowanie_do_wymagan') or analysis.get('matching_to_requirements')
             
             # Match Level and Recommendation w osobnych kolumnach z lepszym formatowaniem
             col1, col2 = st.columns(2)

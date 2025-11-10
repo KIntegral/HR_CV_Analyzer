@@ -1184,6 +1184,10 @@ class CVAnalyzer:
         }
         return names.get(lang_code, {}).get(output_lang, lang_code)
     
+
+
+
+    
     def generate_pdf_output(self, analysis, template_type='full', language=None):
         """Generate PDF with FPDF2 - Arsenal font - 2 pages layout"""
         
@@ -1745,7 +1749,7 @@ class CVAnalyzer:
         # PAGE 1 - KEY HIGHLIGHTS WITH UNDERLINE
         heading = doc.add_paragraph()
         run = heading.add_run(get_section_name('K E Y H I G H L I G H T S'))
-        apply_arsenal_font(run, size=11, bold=True)
+        apply_arsenal_font(run, size=13, bold=True)
         
         pPr = heading._element.get_or_add_pPr()
         pBdr = parse_xml(r'<w:pBdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:bottom w:val="single" w:sz="12" w:space="1" w:color="4C4C4C"/></w:pBdr>')
@@ -1757,7 +1761,7 @@ class CVAnalyzer:
                 if highlight_text:
                     p = doc.add_paragraph(highlight_text, style='List Bullet')
                     for run in p.runs:
-                        apply_arsenal_font(run, size=9, bold=False)
+                        apply_arsenal_font(run, size=13, bold=False)
         
         doc.add_page_break()
         
