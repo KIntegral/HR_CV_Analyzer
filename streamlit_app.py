@@ -553,7 +553,8 @@ with col_download:
             pdf_buffer = analyzer.generate_pdf_output(
                 st.session_state.analysis_result,
                 template_type=template_type,
-                language=pdf_language  # ← DODAJ TEN WIERSZ!
+                language=pdf_language,  # ← DODAJ TEN WIERSZ!
+                client_requirements=client_requirements
             )
             st.download_button(
                 label=t['download_pdf'],
@@ -563,7 +564,15 @@ with col_download:
                 use_container_width=True
             )
         elif output_format == "DOCX":
-            docx_buffer = analyzer.generate_docx_output(st.session_state.analysis_result)
+            lang_map = {'auto': 'auto', 'pl': 'polish', 'en': 'english'}
+            mapped_output_lang = lang_map.get(output_language, 'auto')
+            
+            docx_buffer = analyzer.generate_docx_output(
+        st.session_state.analysis_result,
+        template_type=template_type,
+        language=mapped_output_lang,
+        client_requirements=client_requirements  # ← KLUCZOWE!
+    )
             if docx_buffer and isinstance(docx_buffer, BytesIO):
                 st.download_button(
                     label=t['download_docx'],
