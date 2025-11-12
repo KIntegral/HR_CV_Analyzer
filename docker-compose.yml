@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  cv-analyzer:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_ENABLEXSRFOPTIONS=false
+    volumes:
+      - ./uploads:/app/uploads
+      - ./exports:/app/exports
+    networks:
+      - cv-network
+
+networks:
+  cv-network:
+    driver: bridge
