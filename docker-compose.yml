@@ -4,13 +4,21 @@ services:
   cv-analyzer:
     build: .
     ports:
-      - "8501:8501"
+      - "8080:8080"
     environment:
       - STREAMLIT_SERVER_HEADLESS=true
       - STREAMLIT_SERVER_ENABLEXSRFOPTIONS=false
+      - OLLAMA_HOST=http://host.docker.internal:11434
     volumes:
       - ./uploads:/app/uploads
       - ./exports:/app/exports
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     networks:
       - cv-network
 

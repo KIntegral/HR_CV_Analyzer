@@ -4,42 +4,33 @@ import pytesseract
 import ollama
 import json
 import os
-from PIL import ImageEnhance
+
 from docx.oxml import parse_xml
 from fpdf import FPDF
 
 from PIL import ImageEnhance, ImageFilter, Image
 import numpy as np
 from io import BytesIO
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib import colors
+from reportlab.platypus import Paragraph, Spacer
 
-from docx.shared import Pt, RGBColor, Inches
-from docx.enum.section import WD_SECTION
-
-from reportlab.lib.enums import TA_LEFT
-from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import inch
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-
 
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-import os
+
 # Dla Windows odkomentuj:
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+
+from ollama import Client
+ollama_host = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
+ollama_client = Client(host=ollama_host)
 
 try:
     # Próba użycia systemowych fontów
@@ -315,7 +306,7 @@ class CVAnalyzer:
                     'seed': 42,
                     'num_predict': 4000,
                     'repeat_penalty': 1.1
-                }
+                },
             )
 
             analysis = response['message']['content']
@@ -1322,6 +1313,22 @@ class CVAnalyzer:
             pdf.set_font(font_name, style, font_size)
             pdf.write(font_size/2, word + (' ' if i < len(words)-1 else ''))
 
+
+    def extract_raw_experience_block(self, cv_text):
+        # Look for the "Doświadczenie zawodowe" (case-insensitive)
+        import re
+        start = re.search(r"doświadczenie zawodowe", cv_text, re.IGNORECASE)
+        if not start:
+            return ""
+        start_idx = start.start()
+        # Search for the next main header (e.g. "Wykształcenie", "Umiejętności", etc.)
+        end = re.search(r"\n[A-ZĄĆĘŁŃÓŚŹŻ ]{5,}\n", cv_text[start_idx:], re.IGNORECASE)
+        if end:
+            end_idx = start_idx + end.start()
+            return cv_text[start_idx:end_idx].strip()
+        else:
+            return cv_text[start_idx:].strip()
+  
         
     def generate_pdf_output(self, analysis, template_type='full', language=None, client_requirements=''):
         """Generate PDF with FPDF2 - Arsenal font - 2 pages layout"""
@@ -1330,8 +1337,8 @@ class CVAnalyzer:
         if language is None:
             language = filtered_analysis.get('output_language', 'en')
         # Font paths
-        arsenal_regular = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\arsenal\Arsenal-Regular.ttf"
-        arsenal_bold = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\arsenal\Arsenal-Bold.ttf"
+        arsenal_regular = "/app/arsenal/Arsenal-Regular.ttf"
+        arsenal_bold = "/app/arsenal/Arsenal-Bold.ttf"
         keywords = self._extract_keywords_from_requirements(client_requirements)
         print(f"🔍 Extracted {len(keywords)} keywords for highlighting: {keywords[:10]}")
         print(f"📝 Client requirements: {client_requirements[:100]}...")
@@ -1386,9 +1393,11 @@ class CVAnalyzer:
         try:
             pdf.add_font('Arsenal', '', arsenal_regular)
             pdf.add_font('Arsenal', 'B', arsenal_bold)
+            pdf.set_font('Arsenal', '', 10)
         except Exception as e:
             print(f"Font error: {e}")
-            pdf.set_font('DejaVu', '', 10)
+            # Fallback to built-in Helvetica font (always available in FPDF2)
+            pdf.set_font('Helvetica', '', 10)
         
         # Set margins
         pdf.set_margins(left=12.7, top=0, right=12.7)
@@ -1400,7 +1409,7 @@ class CVAnalyzer:
         pdf.rect(0, 0, 210, 40, 'F')
         
         # Logo
-        logo_path = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\IS_New 1.png"
+        logo_path = "/app/IS_New.png"
         try:
             pdf.image(logo_path, x=5, y=9, w=50)
         except Exception as e:
@@ -1782,7 +1791,7 @@ class CVAnalyzer:
             language = filtered_analysis.get('output_language', 'en')
         
         # Arsenal font path
-        arsenal_regular = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\arsenal\Arsenal-Regular.ttf"
+        arsenal_regular = "/app/arsenal/Arsenal-Regular.ttf"
         
         def safe_text(value, default=''):
             return str(value).strip() if value and str(value).strip() not in ['None', 'null', 'N/A'] else default
