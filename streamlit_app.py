@@ -218,11 +218,7 @@ with st.sidebar:
     t = TRANSLATIONS[ui_language]
     
     # Model selection (ALREADY EXISTS)
-    model_name = st.selectbox(
-        t['select_model'],
-        ["qwen2.5:14b", "llama3.1:8b", "deepseek-r1:8b", "gemma2:9b", "mistral:7b"],
-        index=0
-    )
+    model_name = "qwen2.5:14b"
     
     # Output format (ALREADY EXISTS)
     output_format = st.radio(
@@ -455,55 +451,66 @@ if st.session_state.analysis_result is not None:
         
         # Fit Assessment
         if 'dopasowanie_do_wymagan' in analysis or 'matching_to_requirements' in analysis:
-            st.subheader(t['fitassessment'])
-            dop = analysis.get('dopasowanie_do_wymagan') or analysis.get('matching_to_requirements')
+            st.subheader(t['fit_assessment'])
+            dop = analysis.get('dopasowanie_do_wymagan') or analysis.get('matching_to_requirements', {})
             
-            # Match Level and Recommendation w osobnych kolumnach z lepszym formatowaniem
             col1, col2 = st.columns(2)
             
             with col1:
-                st.markdown("#### " + t['match_level'])
-                match_level = dop.get('poziom_dopasowania', 'N/A')
-                # Kolorowe tło w zależności od poziomu
-                if match_level.lower() in ['wysoki', 'high']:
-                    color = '#d4edda'
-                    text_color = '#155724'
-                elif match_level.lower() in ['sredni', 'medium']:
-                    color = '#fff3cd'
-                    text_color = '#856404'
+                st.markdown(t['match_level'])
+                match_level = dop.get('poziom_dopasowania') or dop.get('match_level', 'N/A')
+                
+                # Mapowanie dla angielskiej wersji
+                if ui_language == 'en' and match_level != 'N/A':
+                    level_mapping = {
+                        'niski': 'Low',
+                        'średni': 'Medium',
+                        'wysoki': 'High',
+                        'bardzo wysoki': 'Very High'
+                    }
+                    match_level = level_mapping.get(match_level.lower(), match_level)
+                
+                if match_level.lower() in ['wysoki', 'high', 'bardzo wysoki', 'very high']:
+                    color = "#d4edda"
+                    text_color = "#155724"
+                elif match_level.lower() in ['średni', 'medium']:
+                    color = "#fff3cd"
+                    text_color = "#856404"
                 else:
-                    color = '#f8d7da'
-                    text_color = '#721c24'
+                    color = "#f8d7da"
+                    text_color = "#721c24"
                 
                 st.markdown(f"""
-                <div style='background-color: {color}; 
-                            padding: 20px; 
-                            border-radius: 10px; 
-                            text-align: center;
-                            border: 2px solid {text_color};'>
-                    <h2 style='color: {text_color}; margin: 0;'>{match_level.upper()}</h2>
-                </div>
+                    <div style='background-color: {color}; padding: 20px; border-radius: 10px; text-align: center; border: 2px solid {text_color}'>
+                        <h2 style='color: {text_color}; margin: 0'>{match_level.upper()}</h2>
+                    </div>
                 """, unsafe_allow_html=True)
             
             with col2:
-                st.markdown("#### " + t['recommendation'])
-                recommendation = dop.get('rekomendacja', 'N/A')
-                # Kolorowe tło w zależności od rekomendacji
+                st.markdown(t['recommendation'])
+                recommendation = dop.get('rekomendacja') or dop.get('recommendation', 'N/A')
+                
+                # Mapowanie dla angielskiej wersji
+                if ui_language == 'en' and recommendation != 'N/A':
+                    rec_mapping = {
+                        'tak': 'Yes',
+                        'nie': 'No',
+                        'warunkowa': 'Conditional',
+                        'no - does not meet requirements': 'No - Does Not Meet Requirements'
+                    }
+                    recommendation = rec_mapping.get(recommendation.lower(), recommendation)
+                
                 if recommendation.upper() in ['TAK', 'YES']:
-                    color = '#d4edda'
-                    text_color = '#155724'
+                    color = "#d4edda"
+                    text_color = "#155724"
                 else:
-                    color = '#f8d7da'
-                    text_color = '#721c24'
+                    color = "#f8d7da"
+                    text_color = "#721c24"
                 
                 st.markdown(f"""
-                <div style='background-color: {color}; 
-                            padding: 20px; 
-                            border-radius: 10px; 
-                            text-align: center;
-                            border: 2px solid {text_color};'>
-                    <h2 style='color: {text_color}; margin: 0;'>{recommendation.upper()}</h2>
-                </div>
+                    <div style='background-color: {color}; padding: 20px; border-radius: 10px; text-align: center; border: 2px solid {text_color}'>
+                        <h2 style='color: {text_color}; margin: 0'>{recommendation.upper()}</h2>
+                    </div>
                 """, unsafe_allow_html=True)
             
             st.markdown("---")
@@ -632,8 +639,8 @@ if st.session_state.analysis_result is not None:
     # Tab 2: Text Generation
     with ai_tab2:
         analysis = st.session_state.analysis_result
-        
         st.write(ai_t['select_data'])
+
         col1, col2 = st.columns(2)
         with col1:
             inc_tech = st.checkbox("Stack Technologiczny", value=True)
@@ -641,43 +648,89 @@ if st.session_state.analysis_result is not None:
         with col2:
             inc_skills = st.checkbox("Umiejętności", value=True)
             inc_summary = st.checkbox("Opis", value=True)
-        
+
         context_data = {}
-        if inc_tech and "stack_technologiczny" in analysis:
-            stack = analysis["stack_technologiczny"]
-            context_data["Tech"] = ", ".join(stack.get("jezyki_programowania", []) + stack.get("frameworki", []))
-        if inc_exp and "doswiadczenie_zawodowe" in analysis:
-            context_data["Experience"] = f"{len(analysis['doswiadczenie_zawodowe'])} positions"
-        if inc_skills and "dopasowanie_do_wymagan" in analysis:
-            if "mocne_strony" in analysis["dopasowanie_do_wymagan"]:
-                context_data["Strengths"] = analysis["dopasowanie_do_wymagan"]["mocne_strony"][:3]
-        if inc_summary and "krotki_opis_kandydata" in analysis:
-            context_data["Summary"] = analysis["krotki_opis_kandydata"]
         
+        # Fix 1: Use correct English keys from your analysis
+        if inc_tech and 'tech_stack_summary' in analysis:
+            tech = analysis['tech_stack_summary']
+            primary_techs = tech.get('primary_technologies', [])
+            context_data['TechStack'] = ', '.join(primary_techs) if primary_techs else ''
+        
+        if inc_exp and 'work_experience' in analysis:
+            jobs = analysis['work_experience']
+            exp_summary = []
+            for job in jobs[:3]:  # Top 3 positions
+                company = job.get('company', '')
+                position = job.get('position', '')
+                if company and position:
+                    exp_summary.append(f"{position} at {company}")
+            context_data['Experience'] = '; '.join(exp_summary) if exp_summary else ''
+        
+        if inc_skills and 'skills' in analysis:
+            skills = analysis['skills']
+            all_skills = []
+            # Collect all skills from all categories
+            for category, skill_list in skills.items():
+                if isinstance(skill_list, list):
+                    all_skills.extend(skill_list[:5])  # Top 5 from each category
+            context_data['Skills'] = ', '.join(all_skills[:15]) if all_skills else ''  # Max 15 total
+        
+        if inc_summary and 'profile_summary' in analysis:
+            context_data['ProfileSummary'] = analysis['profile_summary']
+
+        # Also add matching info if available
+        if 'matching_to_requirements' in analysis:
+            match = analysis['matching_to_requirements']
+            if 'strengths' in match:
+                context_data['Strengths'] = '; '.join(match['strengths'][:3])
+
         st.write(ai_t['instruction'])
-        instruction = st.text_area("instr", placeholder="np. 'Opisz zadania na podstawie stacku'", height=80, key="ai_instr", label_visibility="collapsed")
-        
+
+        # Initialize session state for instruction
+        if "ai_instr" not in st.session_state:
+            st.session_state["ai_instr"] = ""
+
+        # Quick action buttons
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("📝 Opis zadań", use_container_width=True):
-                instruction = "Na podstawie stacku opisz szczegółowe zadania programisty"
+            if st.button("📋 Opis zadań", use_container_width=True):
+                st.session_state["ai_instr"] = "Na podstawie stacku opisz szczegółowe zadania programisty"
         with col2:
-            if st.button("💼 Profil", use_container_width=True):
-                instruction = "Wygeneruj zwięzły opis profilu kandydata (3-4 zdania)"
+            if st.button("👤 Profil", use_container_width=True):
+                st.session_state["ai_instr"] = "Wygeneruj zwięzły opis profilu kandydata (3-4 zdania)"
         with col3:
-            if st.button("🎯 Uzasadnienie", use_container_width=True):
-                instruction = "Napisz dlaczego ten kandydat jest idealny na stanowisko"
-        
+            if st.button("✅ Uzasadnienie", use_container_width=True):
+                st.session_state["ai_instr"] = "Uzasadnij, dlaczego ten kandydat pasuje na stanowisko"
+
+        # Text area for instruction
+        instruction = st.text_area(
+            "instr", 
+            placeholder="np. 'Opisz zadania na podstawie stacku'", 
+            height=80, 
+            key="ai_instr", 
+            label_visibility="collapsed"
+        )
+
+        # Generate button
         if st.button(f"✨ {ai_t['generate']}", type="primary"):
-            if instruction and context_data:
+            if st.session_state["ai_instr"].strip() and context_data:
                 with st.spinner(ai_t['generating']):
                     analyzer = CVAnalyzer(model_name=model_name)
-                    generated = analyzer.ai_text_assistant(instruction, context_data)
+                    generated = analyzer.ai_text_assistant(
+                        st.session_state["ai_instr"], 
+                        context_data
+                    )
                     st.session_state['generated'] = generated
-        
+            else:
+                st.warning("Podaj instrukcję i wybierz dane!")
+
+        # Display generated content
         if 'generated' in st.session_state:
             st.success(ai_t['result'])
             st.info(st.session_state['generated'])
+
+
 # Footer
 st.markdown("---")
 st.markdown(t['footer'])
