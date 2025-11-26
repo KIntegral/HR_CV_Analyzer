@@ -88,7 +88,27 @@ TRANSLATIONS = {
         'matchlevel': 'Poziom dopasowania',
         'recommendation': 'Rekomendacja',
         'justification': 'Uzasadnienie',
-        'keystrengths': 'Kluczowe mocne strony',
+        'keystrengths': 'Kluczowe mocne strony',        
+        'aitab': '🤖 AI Assistant / Asystent AI',
+        'ait_tab1': '📝 Korekta tekstu',
+        'ait_tab2': '✨ Generowanie treści',
+        'ait_selectdata': 'Wybierz dane:',
+        'ait_techstack': 'Stack Technologiczny',
+        'ait_experience': 'Doświadczenie',
+        'ait_skills': 'Umiejętności',
+        'ait_description': 'Opis',
+        'ait_instruction': 'Instrukcja:',
+        'ait_btn_tasks': '📋 Opis zadań',
+        'ait_btn_profile': '👤 Profil',
+        'ait_btn_justify': '✅ Uzasadnienie',
+        'ait_placeholder': "np. 'Opisz zadania na podstawie stacku'",
+        'ait_generate': 'Generuj',
+        'ait_generating': 'Generowanie...',
+        'ait_warning': 'Podaj instrukcję i wybierz dane!',
+        'ait_result': 'Wynik:',
+        'ait_prompt_tasks': 'Na podstawie stacku opisz szczegółowe zadania programisty',
+        'ait_prompt_profile': 'Wygeneruj zwięzły opis profilu kandydata (3-4 zdania)',
+        'ait_prompt_justify': 'Uzasadnij, dlaczego ten kandydat pasuje na stanowisko',
     },
     'en': {
         'title': '📄 CV Analyzer - HR Assistant',
@@ -167,6 +187,26 @@ TRANSLATIONS = {
         'recommendation': 'Recommendation',  # ← DODAJ
         'justification': 'Justification',  # ← DODAJ
         'keystrengths': 'Key Strengths',
+        'aitab': '🤖 AI Assistant',
+        'ait_tab1': '📝 Text Correction',
+        'ait_tab2': '✨ Content Generation',
+        'ait_selectdata': 'Select data:',
+        'ait_techstack': 'Tech Stack',
+        'ait_experience': 'Experience',
+        'ait_skills': 'Skills',
+        'ait_description': 'Description',
+        'ait_instruction': 'Instruction:',
+        'ait_btn_tasks': '📋 Task Description',
+        'ait_btn_profile': '👤 Profile',
+        'ait_btn_justify': '✅ Justification',
+        'ait_placeholder': "e.g. 'Describe programmer tasks based on tech stack'",
+        'ait_generate': 'Generate',
+        'ait_generating': 'Generating...',
+        'ait_warning': 'Provide instruction and select data!',
+        'ait_result': 'Result:',
+        'ait_prompt_tasks': 'Based on the tech stack, describe detailed programmer tasks',
+        'ait_prompt_profile': 'Generate a concise candidate profile description (3-4 sentences)',
+        'ait_prompt_justify': 'Justify why this candidate is suitable for the position',
     }
 }
 
@@ -595,7 +635,7 @@ with col_download:
             
 if st.session_state.analysis_result is not None:
     st.markdown("---")
-    st.markdown('<div class="section-header">🤖 AI Assistant / Asystent AI</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">{t["aitab"]}</div>', unsafe_allow_html=True)
     
     # AI Assistant translations
     ai_t = {
@@ -643,11 +683,11 @@ if st.session_state.analysis_result is not None:
 
         col1, col2 = st.columns(2)
         with col1:
-            inc_tech = st.checkbox("Stack Technologiczny", value=True)
-            inc_exp = st.checkbox("Doświadczenie", value=True)
+            inc_tech = st.checkbox(t['ait_techstack'], value=True)
+            inc_exp = st.checkbox(t['ait_experience'], value=True)
         with col2:
-            inc_skills = st.checkbox("Umiejętności", value=True)
-            inc_summary = st.checkbox("Opis", value=True)
+            inc_skills = st.checkbox(t['ait_skills'], value=True)
+            inc_summary = st.checkbox(t['ait_description'], value=True)
 
         context_data = {}
         
@@ -694,19 +734,19 @@ if st.session_state.analysis_result is not None:
         # Quick action buttons
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("📋 Opis zadań", use_container_width=True):
-                st.session_state["ai_instr"] = "Na podstawie stacku opisz szczegółowe zadania programisty"
+            if st.button(t['ait_btn_tasks'], use_container_width=True):
+                st.session_state["ai_instr"] = t['ait_prompt_tasks']
         with col2:
-            if st.button("👤 Profil", use_container_width=True):
-                st.session_state["ai_instr"] = "Wygeneruj zwięzły opis profilu kandydata (3-4 zdania)"
+            if st.button(t['ait_btn_profile'], use_container_width=True):
+                st.session_state["ai_instr"] = t['ait_prompt_profile']
         with col3:
-            if st.button("✅ Uzasadnienie", use_container_width=True):
-                st.session_state["ai_instr"] = "Uzasadnij, dlaczego ten kandydat pasuje na stanowisko"
+            if st.button(t['ait_btn_justify'], use_container_width=True):
+                st.session_state["ai_instr"] = t['ait_prompt_justify']
 
         # Text area for instruction
         instruction = st.text_area(
             "instr", 
-            placeholder="np. 'Opisz zadania na podstawie stacku'", 
+            placeholder=t['ait_placeholder'],
             height=80, 
             key="ai_instr", 
             label_visibility="collapsed"
@@ -723,7 +763,7 @@ if st.session_state.analysis_result is not None:
                     )
                     st.session_state['generated'] = generated
             else:
-                st.warning("Podaj instrukcję i wybierz dane!")
+                st.warning(t['ait_warning'])
 
         # Display generated content
         if 'generated' in st.session_state:
