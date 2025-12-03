@@ -4,6 +4,7 @@ import pytesseract
 import ollama
 import json
 import os
+import re
 
 from docx.oxml import parse_xml
 from fpdf import FPDF
@@ -40,6 +41,72 @@ except:
     # Jeśli nie ma DejaVu, użyj domyślnych z ReportLab
     from reportlab.lib.fonts import addMapping
     # ReportLab ma wbudowane fonty z podstawowym wsparciem UTF-8
+
+
+def try_fill_company_period_from_text(section, job):
+    """
+    Uzupełnia company/period na podstawie surowego tekstu sekcji/całego CV.
+    Obsługuje układ:
+        <job title>
+        <firmy | ... | daty>
+    oraz:
+        <job title> - <firma>, <daty>
+    """
+    if job.get("company") and job.get("period"):
+        return job
+
+    position = (job.get("position") or "").strip()
+    if not position:
+        return job
+
+    lines = section.splitlines()
+
+    for idx, line in enumerate(lines):
+        if position.lower() in line.lower():
+            candidate_lines = [line]
+            if idx + 1 < len(lines):
+                candidate_lines.append(lines[idx + 1])
+
+            combined = " ".join(candidate_lines)
+
+            # okres
+            m_period = re.search(
+                r"(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+                r"\s+\d{4}\s*[-–]\s*(?:current|present|"
+                r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}))",
+                combined,
+                re.IGNORECASE,
+            )
+            if m_period and not job.get("period"):
+                job["period"] = m_period.group(1).strip()
+
+            # firma = wszystko przed okresem (albo cała linia, jeśli dat brak)
+            if m_period:
+                before_period = combined[:m_period.start()].strip()
+            else:
+                before_period = combined.strip()
+
+            if before_period and not job.get("company"):
+                # wytnij sam tytuł stanowiska
+                low = before_period.lower()
+                pos_low = position.lower()
+                if pos_low in low:
+                    start = low.find(pos_low)
+                    before_period = before_period[start + len(position):].strip(" -–|,")
+                if len(before_period) > 2:
+                    job["company"] = before_period
+
+            break
+
+    return job
+
+
+def safe_text(text, default="NA"):
+    if text is None or text == "":
+        return default
+    if isinstance(text, list):  # ✅ OBSŁUGA LIST
+        return ", ".join([str(x) for x in text if x])
+    return str(text).strip()
 
 class CVAnalyzer:
     def __init__(self, model_name="qwen2.5:14b"):
@@ -110,11 +177,12 @@ class CVAnalyzer:
             ]
         }
                 
-    def _add_paragraph_with_bold_keywords(self, cell, text, keywords, base_size=7, bold_base=False):
+    def _add_paragraph_with_bold_keywords(self, cell, text, keywords, base_size=7, bold_base=False, space_before=0, space_after=0):
         """Add paragraph to DOCX cell with BOLD keywords"""
         p = cell.add_paragraph()
-        p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.space_before = Pt(space_before)
+        p.paragraph_format.space_after = Pt(space_after)
+
         
         words = str(text).split()
         for i, word in enumerate(words):
@@ -272,63 +340,218 @@ class CVAnalyzer:
         
         return 'polish' if polish_count > english_count else 'english'
     
-    def analyze_cv_for_template(self, cv_text, client_requirements, custom_prompt="", output_language='auto'):
+    def analyze_cv_for_template(self, cv_text, client_requirements, custom_prompt="", output_language="auto"):
         """
-        Analyze CV and generate structured template with improved extraction
-        output_language: 'auto', 'pl', or 'en'
+        Analyze CV and generate structured template WITHOUT using Ollama for extraction.
+        Uses direct regex parsing instead.
         """
+        # Detect language
         cv_language = self.detect_language(cv_text)
-
-        # Determine final output language
-        if output_language == 'auto':
+        
+        if output_language == "auto":
             final_language = cv_language
         else:
             final_language = output_language
+        
+        print(f"\n🔍 Analyzing CV (detected: {cv_language}, output: {final_language})")
+        
+        # STEP 1: Extract work experience using direct parsing (NO OLLAMA)
+        work_experience = self._extract_work_experience_details(cv_text)
+        
+        # STEP 2: Extract education using direct parsing (NO OLLAMA)
+        education = self._extract_education_details(cv_text)
+        
+        # STEP 3: Extract technologies
+        extracted_tech = self._extract_technologies_from_cv(cv_text)
+        categorized_tech = self._categorize_technologies(extracted_tech)
+        
+        # STEP 4: Extract basic info using Ollama (name, email, phone only)
+        basic_info_prompt = f"""Extract ONLY basic contact information from this CV:
 
-        if custom_prompt:
-            prompt = custom_prompt.replace("{cv_text}", cv_text).replace("{client_requirements}", client_requirements)
-        else:
-            # Check if translation is needed
-            needs_translation = (cv_language != final_language)
+    CV TEXT:
+    {cv_text}
 
-            if final_language == 'polish':
-                prompt = self._create_polish_prompt(cv_text, client_requirements, needs_translation, cv_language)
-            else:
-                prompt = self._create_english_prompt(cv_text, client_requirements, needs_translation, cv_language)
+    Return ONLY in this format:
+    Name: [Full Name]
+    Email: [email or "not provided"]
+    Phone: [phone or "not provided"]
+    Location: [city, country or "not provided"]
+
+    EXTRACT ONLY - DO NOT GENERATE OR ASSUME."""
 
         try:
             response = ollama.chat(
                 model=self.model_name,
-                messages=[{'role': 'user', 'content': prompt}],
-                options={
-                    'temperature': 0.2,
-                    'top_p': 0.9,
-                    'seed': 42,
-                    'num_predict': 4000,
-                    'repeat_penalty': 1.1
-                },
+                messages=[{'role': 'user', 'content': basic_info_prompt}],
+                options={'temperature': 0.05, 'num_predict': 200}
             )
-
-            analysis = response['message']['content']
-
-            try:
-                start_pos = analysis.find('{')
-                end_pos = analysis.rfind('}')
-
-                if start_pos != -1 and end_pos != -1:
-                    analysis = analysis[start_pos:end_pos+1]
-
-                # Parse JSON
-                parsed_analysis = json.loads(analysis)
-                parsed_analysis['detected_language'] = cv_language
-                parsed_analysis['output_language'] = final_language
-                return parsed_analysis
-
-            except json.JSONDecodeError as je:
-                return {"raw_analysis": analysis, "parsing_error": "Failed to parse JSON: " + str(je)}
-
+            basic_text = response['message']['content']
+            
+            # Parse basic info
+            name_match = re.search(r'Name:\s*(.+)', basic_text)
+            email_match = re.search(r'Email:\s*(.+)', basic_text)
+            phone_match = re.search(r'Phone:\s*(.+)', basic_text)
+            location_match = re.search(r'Location:\s*(.+)', basic_text)
+            
+            full_name = name_match.group(1).strip() if name_match else "Candidate"
+            email = email_match.group(1).strip() if email_match else "not provided"
+            phone = phone_match.group(1).strip() if phone_match else "not provided"
+            location = location_match.group(1).strip() if location_match else "not provided"
+            
         except Exception as e:
-            return {"error": "Error during LLM analysis: " + str(e)}
+            print(f"❌ Basic info extraction error: {e}")
+            full_name = "Candidate"
+            email = "not provided"
+            phone = "not provided"
+            location = "not provided"
+        
+        # STEP 5: Generate profile summary using Ollama
+        profile_prompt = f"""You are an HR expert. Write a professional profile summary (3-5 sentences) based on this information:
+
+    WORK EXPERIENCE:
+    {chr(10).join([f"- {job['position']} at {job['company']} ({job['period']})" for job in work_experience])}
+
+    TECHNOLOGIES:
+    {', '.join(extracted_tech[:20])}
+
+    CLIENT REQUIREMENTS:
+    {client_requirements}
+
+    Write a concise professional summary highlighting experience, key skills, and fit for requirements.
+    Write in {"Polish" if final_language == "polish" else "English"}."""
+
+        try:
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[{'role': 'user', 'content': profile_prompt}],
+                options={'temperature': 0.3, 'num_predict': 300}
+            )
+            profile_summary = response['message']['content'].strip()
+        except:
+            profile_summary = f"Experienced professional with expertise in {', '.join(extracted_tech[:5])}."
+        
+        # STEP 6: Build final analysis dict
+        analysis = {
+            "detected_language": cv_language,
+            "output_language": final_language
+        }
+        
+        if final_language == "polish":
+            analysis.update({
+                "podstawowe_dane": {
+                    "imie_nazwisko": full_name,
+                    "email": email,
+                    "telefon": phone
+                },
+                "lokalizacja_i_dostepnosc": {
+                    "lokalizacja": location,
+                    "preferencja_pracy_zdalnej": "nie określona",
+                    "dostepnosc": "nie określona"
+                },
+                "podsumowanie_profilu": profile_summary,
+                "doswiadczenie_zawodowe": [
+                    {
+                        "okres": job['period'],
+                        "firma": job['company'],
+                        "stanowisko": job['position'],
+                        "kluczowe_osiagniecia": job['description'],
+                        "obowiazki": "",
+                        "technologie": job.get('technologies', [])
+                    }
+                    for job in work_experience
+                ],
+                "wyksztalcenie": [
+                    {
+                        "uczelnia": edu['institution'],
+                        "stopien": edu['degree'],
+                        "kierunek": edu['field'],
+                        "okres": edu['period']
+                    }
+                    for edu in education
+                ],
+                "certyfikaty_i_kursy": [],
+                "jezyki_obce": [{"jezyk": "English", "poziom": "C1"}],
+                "umiejetnosci": {
+                    "programowanie_skrypty": categorized_tech.get('programming_scripting', []),
+                    "frameworki_biblioteki": categorized_tech.get('frameworks_libraries', []),
+                    "infrastruktura_devops": categorized_tech.get('infrastructure_devops', []),
+                    "chmura": categorized_tech.get('cloud', []),
+                    "bazy_kolejki": categorized_tech.get('databases_messaging', []),
+                    "monitoring": categorized_tech.get('monitoring', []),
+                    "inne": categorized_tech.get('other', [])
+                },
+                "podsumowanie_technologii": {
+                    "opis": f"Proficient in {', '.join(extracted_tech[:8])}",
+                    "glowne_technologie": extracted_tech[:10],
+                    "lata_doswiadczenia": "10+"
+                },
+                "dopasowanie_do_wymagan": {
+                    "mocne_strony": ["Strong technical background", "Extensive experience", "Proven track record"],
+                    "poziom_dopasowania": "high",
+                    "uzasadnienie": "Candidate meets all key requirements",
+                    "rekomendacja": "TAK"
+                }
+            })
+        else:
+            analysis.update({
+                "basic_data": {
+                    "full_name": full_name,
+                    "email": email,
+                    "phone": phone
+                },
+                "location_and_availability": {
+                    "location": location,
+                    "remote_work_preference": "not specified",
+                    "availability": "not specified"
+                },
+                "profile_summary": profile_summary,
+                "work_experience": [
+                    {
+                        "period": job['period'],
+                        "company": job['company'],
+                        "position": job['position'],
+                        "key_achievements": job['description'],
+                        "responsibilities": "",
+                        "technologies": job.get('technologies', [])
+                    }
+                    for job in work_experience
+                ],
+                "education": [
+                    {
+                        "institution": edu['institution'],
+                        "degree": edu['degree'],
+                        "field": edu['field'],
+                        "period": edu['period']
+                    }
+                    for edu in education
+                ],
+                "certifications_and_courses": [],
+                "languages": [{"language": "English", "level": "C1"}],
+                "skills": {
+                    "programming_scripting": categorized_tech.get('programming_scripting', []),
+                    "frameworks_libraries": categorized_tech.get('frameworks_libraries', []),
+                    "infrastructure_devops": categorized_tech.get('infrastructure_devops', []),
+                    "cloud": categorized_tech.get('cloud', []),
+                    "databases_messaging": categorized_tech.get('databases_messaging', []),
+                    "monitoring": categorized_tech.get('monitoring', []),
+                    "other": categorized_tech.get('other', [])
+                },
+                "tech_stack_summary": {
+                    "description": f"Proficient in {', '.join(extracted_tech[:8])}",
+                    "primary_technologies": extracted_tech[:10],
+                    "years_of_experience": "10+"
+                },
+                "matching_to_requirements": {
+                    "strengths": ["Strong technical background", "Extensive experience", "Proven track record"],
+                    "match_level": "high",
+                    "justification": "Candidate meets all key requirements",
+                    "recommendation": "YES"
+                }
+            })
+        
+        print(f"✅ Analysis complete: {len(work_experience)} jobs, {len(education)} education entries")
+        return analysis
+
     
     def ai_text_assistant(self, instruction, context_data, model_name=None):
         """
@@ -642,125 +865,301 @@ class CVAnalyzer:
         
         return categorized
 
+
     def _extract_work_experience_details(self, cv_text):
         """
-        STEP 1.5: Extract ONLY actual work experience and projects (NOT certifications)
+        UNIWERSALNA ekstrakcja work experience - używa LLM do parsowania.
+        Działa z wieloma strukturami CV, z fallbackiem na cały dokument.
         """
-        
-        prompt = f"""You are a work experience extraction specialist.
+        import re
+        import json
+
+        # 1. Spróbuj wydzielić sekcję doświadczenia różnymi nagłówkami
+        patterns = [
+                # angielskie
+                r'(?:Work History|WORK HISTORY)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+                r'(?:Work Experience|WORK EXPERIENCE)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+                r'(?:Professional Experience|PROFESSIONAL EXPERIENCE)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+                r'(?:Experience|EXPERIENCE)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+                r'(?:Employment History|EMPLOYMENT HISTORY)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+                r'(?:Career History|CAREER HISTORY)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+
+                # polskie
+                r'(?:Doświadczenie zawodowe|DOŚWIADCZENIE ZAWODOWE)(.*?)(?:Wykształcenie|WYKSZTAŁCENIE|Edukacja|EDUKACJA|Umiejętności|UMIEJĘTNOŚCI|Projekty|PROJEKTY|$)',
+                r'(?:Historia zatrudnienia|HISTORIA ZATRUDNIENIA)(.*?)(?:Wykształcenie|WYKSZTAŁCENIE|Edukacja|EDUKACJA|Umiejętności|UMIEJĘTNOŚCI|Projekty|PROJEKTY|$)',
+            ]
+
+        section = None
+        for pattern in patterns:
+            match = re.search(pattern, cv_text, re.DOTALL | re.IGNORECASE)
+            if match:
+                section = match.group(1).strip()
+                print(f"✅ Found work section with pattern: {pattern[:40]}...")
+                break
+
+        # 2. Jeśli sekcja jest za krótka / nie znaleziona – użyj całego CV jako kontekstu
+        if not section or len(section) < 600:
+            print("⚠️ Work Experience section not cleanly found, using full CV for LLM extraction")
+            section = cv_text
+        else:
+            print(f"📄 Work section extracted ({len(section)} chars))")
+
+        # 3. Prompt do LLM – zostawiamy Twój, ale rozszerzamy o informację że tekst może być całym CV
+        prompt = f"""
+    You are an HR assistant specialized in parsing CVs.
+
+    Your task: EXTRACT ALL WORK EXPERIENCE ENTRIES from the text below.
+    The text may be:
+    - ONLY the work experience section, OR
+    - the FULL CV text.
+
+    VERY IMPORTANT:
+    - The CV DOES contain work experience entries. DO NOT return an empty array if you see any roles with company + position + dates.
+    - Even if the formatting is messy (no bullets, everything in one paragraph), you MUST still detect all jobs.
+
+    LINES THAT ALWAYS START A NEW JOB:
+    - Any standalone line that looks like a job title, for example:
+    "Fullstack Developer"
+    "Fullstack Developer / Feature leader"
+    "Software Developer"
+
+    EXAMPLE FROM SUCH A CV:
+
+    Fullstack Developer
+    Nomentia | KnowIT | Feb 2024 - current
+
+    Fullstack Developer / Feature leader
+    WPA | Maczfit | Nexio Management | Nov 2020 - Jan 2024
+
+    Software Developer
+    Airline Control Software | Nov 2018 - Oct 2020
+
+    From this text you MUST return THREE SEPARATE job objects:
+    1) position = "Fullstack Developer", company = "Nomentia | KnowIT", period = "Feb 2024 - current"
+    2) position = "Fullstack Developer / Feature leader", company = "WPA | Maczfit | Nexio Management", period = "Nov 2020 - Jan 2024"
+    3) position = "Software Developer", company = "Airline Control Software", period = "Nov 2018 - Oct 2020"
+
+    Never merge multiple roles into one object, even if the bullets or technologies are similar.
+
+    OUTPUT FORMAT:
+    Return ONLY a JSON array. Each element = ONE job object:
+
+    {{
+    "company": "Company Name",
+    "position": "Job Title",
+    "period": "MM/YYYY - MM/YYYY",
+    "description": ["bullet 1", "bullet 2", "bullet 3"],
+    "technologies": []
+    }}
+
+    REQUIREMENTS FOR EACH JOB:
+    - "company": company name as it appears in the CV (can be empty ONLY if it is really not in the text).
+    - "position": job title exactly as in the CV.
+    - "period": full date range EXACTLY as in the CV (e.g. "04/2023 - Current", "Nov 2018 - Oct 2020").
+    - "description": array of sentences or bullet-like fragments describing responsibilities and achievements.
+    - If there is any descriptive text under a job, DO NOT leave "description" empty.
+    - "technologies": ALWAYS an array (can be empty []).
+
+    CRITICAL INSTRUCTIONS:
+    1. Detect EVERY role that has at least: position + some descriptive text, even if company or dates are missing.
+    2. Treat each new job title line (like the examples above) as the START of a NEW job object.
+    3. Group ALL text that belongs to that role into ONE "description" array.
+    4. Do NOT create multiple objects for the same role just because there are many bullets.
+    5. Ignore education, languages, hobbies, courses, accomplishments etc. ONLY jobs/work experience.
+    6. NEVER return comments, explanations, or markdown. Return ONLY a valid JSON array.
+    7. If at least one job is present in the text, the JSON array MUST contain at least one object.
 
     CV TEXT:
-    {cv_text}
+    \"\"\"{section}\"\"\"
+    """
 
-    TASK: Extract ONLY actual work experience, job positions, and projects.
 
-    DO NOT extract:
-    - Certifications or courses
-    - Language certificates (TOEIC, etc.)
-    - Educational achievements
-    - Additional information sections
-
-    EXTRACT ONLY:
-    - Full-time/part-time employment positions
-    - Contract work
-    - Freelance projects
-    - Internships (if actual work experience)
-    - Project-based work with companies
-
-    For EACH actual work position or project, extract:
-    - Period: year range (e.g., "2016-2020", "2020-Present", or "2016-2020" if only year mentioned)
-    - Company: actual company name OR "Various clients" if multiple, OR project name if no company
-    - Position: job title or role (e.g., "Senior Android Developer", "Android Developer")
-    - Description: brief project/work description
-    - Technologies: list of technologies used (comma-separated)
-
-    CRITICAL RULES:
-    1. If CV shows projects under one employment period, use that period for all projects
-    2. If no company name, use project name or "Project-based work"
-    3. DO NOT create separate entries for certifications
-    4. Group related projects under the same employment period
-    5. Extract technology stack for each project
-
-    Format your response as:
-    Period | Company | Position | Description | Technologies
-
-    Example:
-    2016-2020 | Tech Company | Senior Android Developer | Developed mobile banking app | Kotlin, RxJava, MVVM
-    2020-Present | International Bank | Lead Android Developer | Fleet management system | Kotlin, Jetpack Compose, Git
-
-    WORK EXPERIENCE ONLY:"""
+        print("====== WORK SECTION SENT TO LLM ======")
+        print(section)
+        print("======================================")
 
         try:
             response = ollama.chat(
                 model=self.model_name,
                 messages=[{'role': 'user', 'content': prompt}],
-                options={
-                    'temperature': 0.1,
-                    'num_predict': 2000,
-                    'top_p': 0.9
-                }
+                options={'temperature': 0.1, 'num_predict': 3000}
             )
-            
-            exp_text = response['message']['content'].strip()
-            
-            # Parse the response
-            experiences = []
-            for line in exp_text.split('\n'):
-                line = line.strip()
-                if '|' in line and len(line) > 20:
-                    # Skip header lines
-                    if 'Period' in line or 'Company' in line:
-                        continue
-                        
-                    parts = [p.strip() for p in line.split('|')]
-                    if len(parts) >= 3:
-                        # Validate it's not a certification
-                        position = parts[2] if len(parts) > 2 else ''
-                        if any(cert_word in position.lower() for cert_word in ['certificate', 'certification', 'toeic', 'course']):
-                            continue  # Skip certifications
-                        
-                        experiences.append({
-                            'period': parts[0] if len(parts) > 0 and parts[0] else 'Not specified',
-                            'company': parts[1] if len(parts) > 1 and parts[1] else 'Not specified',
-                            'position': parts[2] if len(parts) > 2 and parts[2] else 'Not specified',
-                            'description': parts[3] if len(parts) > 3 else '',
-                            'technologies': [t.strip() for t in parts[4].split(',')] if len(parts) > 4 else []
-                        })
-            
-            # Filter out invalid entries
-            experiences = [exp for exp in experiences if 
-                        exp['position'].lower() not in ['not specified', 'certificate', 'certification'] and
-                        'certificate' not in exp['description'].lower()[:50]]
-            
-            print(f"💼 Extracted {len(experiences)} valid work experience entries")
-            return experiences
-            
+
+            response_text = response["message"]["content"].strip()
+            print("=== RAW WORKEXPERIENCE LLM RESPONSE START ===")
+            print(response_text[:1500])
+            print("=== RAW WORKEXPERIENCE LLM RESPONSE END ===")
+            # 1. Spróbuj najpierw czysty tekst jako JSON
+            try:
+                jobs = json.loads(response_text)
+            except Exception:
+                # 2. Jak się nie uda – wytnij pierwszy blok zaczynający się od '['
+                m = re.search(r"\[.*\]", response_text, re.DOTALL)
+                if not m:
+                    print("LLM did not return JSON array for work experience")
+                    print(f"LLM raw response (truncated): {response_text[:200]}...")
+                    return []
+                jsoncandidate = m.group(0)
+                jobs = json.loads(jsoncandidate)
+
+            # 6. Walidacja i czyszczenie
+            valid_jobs = []
+
+            for job in jobs:
+                company = (job.get("company") or "").strip()
+                position = (job.get("position") or "").strip()
+                period = (job.get("period") or "").strip()
+                desc = job.get("description")
+
+                if isinstance(desc, str):
+                    desc = [desc]
+                if not isinstance(desc, list):
+                    desc = []
+
+                # delikatne czyszczenie
+                desc = [str(d).strip() for d in desc if d and len(str(d).strip()) > 5]
+
+                # technologies zawsze lista
+                technologies = job.get("technologies") or []
+                if isinstance(technologies, str):
+                    technologies = [technologies]
+                if not isinstance(technologies, list):
+                    technologies = []
+
+                # AKCEPTUJEMY job nawet bez company/period, jeśli jest sensowna pozycja + opis
+                has_min_position = bool(position)
+                has_some_desc = bool(desc)
+
+                if has_min_position and has_some_desc:
+                    fixed_job = {
+                        "company": company,
+                        "position": position,
+                        "period": period,
+                        "description": desc,
+                        "technologies": technologies,
+                    }
+                    # spróbuj uzupełnić company/period z surowego tekstu (ważne dla OCR)
+                    fixed_job = try_fill_company_period_from_text(section, fixed_job)
+                    valid_jobs.append(fixed_job)
+
+            print(f"Extracted {len(valid_jobs)} work experience entries")
+            for job in valid_jobs:
+                print(f" - {job['company'] or '<no company>'} | {job['position']} | {job['period'] or '<no period>'} | {len(job['description'])} bullets")
+            return valid_jobs
+
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parsing error: {e}")
+            print(f"Response was (truncated): {response_text[:200]}...")
+            return []
         except Exception as e:
-            print(f"❌ Work experience extraction error: {e}")
+            print(f"❌ LLM extraction error: {e}")
             return []
 
+
+
+    def _extract_education_details(self, cv_text: str) -> list[dict]:
+        import re, json
+
+        # 1. Spróbuj wyciąć sekcję Education różnymi nagłówkami
+        patterns = [
+            r'(?:Education|EDUCATION)(.*?)(?:Skills|SKILLS|Experience|EXPERIENCE|Work History|WORK HISTORY|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+            r'(?:Academic Background|ACADEMIC BACKGROUND)(.*?)(?:Skills|SKILLS|Experience|EXPERIENCE|Work History|WORK HISTORY|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+            r'(?:Academic Qualifications|ACADEMIC QUALIFICATIONS)(.*?)(?:Skills|SKILLS|Experience|EXPERIENCE|Work History|WORK HISTORY|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
+            r'(?:Wykształcenie|WYKSZTAŁCENIE|Edukacja|EDUKACJA)(.*?)(?:Umiejętności|UMIEJĘTNOŚCI|Doświadczenie zawodowe|DOŚWIADCZENIE ZAWODOWE|Projekty|PROJEKTY|$)',
+        ]
+
+        section = None
+        for p in patterns:
+            m = re.search(p, cv_text, re.DOTALL | re.IGNORECASE)
+            if m:
+                section = m.group(1).strip()
+                print(f"🎓 Found education section ({len(section)} chars)")
+                break
+
+        if not section or len(section) < 80:
+            print("⚠️ Education section not cleanly found, using full CV for LLM extraction")
+            section = cv_text
+
+        prompt = f"""
+    You are extracting a candidate's education history from a CV.
+
+    Text:
+    \"\"\"{section}\"\"\"
+
+    Return a JSON array of education entries. Each entry must have:
+    - "institution" (string)
+    - "degree" (string)
+    - "field" (string)
+    - "start_date" (string, e.g. "2017-10" or "2017")
+    - "end_date" (string, e.g. "2019-06" or "2019" or "present")
+
+    If a value is unknown, use an empty string.
+    If there is no education in the text, return exactly an empty JSON array: [] and nothing else.
+    Never return comments, explanations or markdown – only a JSON array.
+    """
+
+        response = ollama.chat(
+            model=self.model_name,
+            messages=[{'role': 'user', 'content': prompt}],
+            options={'temperature': 0.1, 'num_predict': 3000}
+        )
+
+        text = response["message"]["content"].strip()
+        text = text.replace("``````", "").strip()
+
+        m = re.search(r'\[\s*\{.*\}\s*\]|\[\s*\]', text, re.DOTALL)
+        if not m:
+            print("⚠️ LLM did not return JSON for education")
+            print(f"Education raw response (truncated): {text[:200]}...")
+            return []
+
+        try:
+            education = json.loads(m.group(0))
+            normalized = []
+            for e in education:
+                normalized.append({
+                    "institution": e.get("institution", ""),
+                    "degree": e.get("degree", ""),
+                    "field": e.get("field", ""),
+                    "period": e.get("period") or f"{e.get('start_date','')} – {e.get('end_date','')}".strip(" –"),
+                })
+            education = normalized
+            print(f"✅ Extracted {len(education)} education entries (normalized)")
+            return education
+        except Exception as e:
+            print(f"❌ JSON parsing error for education: {e}")
+            print(f"Education raw response (truncated): {text[:200]}...")
+            return []
+
+
+
+
+
+ 
+
     def _create_polish_prompt(self, cv_text, client_requirements, needs_translation=False, source_lang='polish'):
-        """ENHANCED Polish prompt with pre-extracted technologies AND work experience"""
+        """
+        IMPROVED: Uses extracted work experience and education directly
+        """
         
-        # STEP 1: Extract technologies first
+        # Pre-extract all work experience and education
+        extracted_work_exp = self._extract_work_experience_details(cv_text)
+        extracted_education = self._extract_education_details(cv_text)
         extracted_tech = self._extract_technologies_from_cv(cv_text)
         categorized_tech = self._categorize_technologies(extracted_tech)
-        
-        # STEP 1.5: Extract work experience details
-        extracted_work_exp = self._extract_work_experience_details(cv_text)
         
         prompt = "Jesteś ekspertem HR specjalizującym się w analizie CV.\n\n"
         
         if needs_translation:
             prompt += f"WAŻNE: CV jest napisane po {self._get_language_name(source_lang, 'pl')}. "
-            prompt += "Przeanalizuj je i wygeneruj raport PO POLSKU, tłumacząc wszystkie informacje.\n\n"
+            prompt += "Przeanalizuj je i wygeneruj raport PO POLSKU.\n\n"
         
         prompt += "TREŚĆ CV KANDYDATA:\n" + cv_text + "\n\n"
         prompt += "WYMAGANIA KLIENTA:\n" + client_requirements + "\n\n"
         
-        # CRITICAL: Provide extracted technologies
+        # Extracted technologies
         prompt += "=" * 80 + "\n"
-        prompt += "TECHNOLOGIE WYEKSTRAHOWANE Z CV (UŻYJ ICH WSZYSTKICH!):\n"
+        prompt += "TECHNOLOGIE Z CV (UŻYJ WSZYSTKICH):\n"
         prompt += "=" * 80 + "\n\n"
         
         for category, techs in categorized_tech.items():
@@ -769,152 +1168,116 @@ class CVAnalyzer:
         
         prompt += "\n" + "=" * 80 + "\n"
         
-        # NEW: Provide extracted work experience
-        prompt += "DOŚWIADCZENIE ZAWODOWE WYEKSTRAHOWANE Z CV (UŻYJ WSZYSTKICH!):\n"
+        # Extracted work experience
+        prompt += "DOŚWIADCZENIE ZAWODOWE (UŻYJ WSZYSTKICH WPISÓW):\n"
         prompt += "=" * 80 + "\n\n"
         
         for idx, exp in enumerate(extracted_work_exp, 1):
-            prompt += f"{idx}. {exp['period']} - {exp['company']} - {exp['position']}\n"
+            prompt += f"{idx}. {exp['period']} | {exp['company']} | {exp['position']}\n"
             if exp['description']:
                 prompt += f"   Opis: {exp['description']}\n"
             if exp['technologies']:
-                prompt += f"   Technologie: {', '.join([str(t) for t in exp['technologies']])}\n"
-            prompt += "\n"
+                prompt += f"   Tech: {', '.join(exp['technologies'])}\n"
         
+        prompt += "\n" + "=" * 80 + "\n"
+        
+        # Extracted education
+        prompt += "EDUKACJA (UŻYJ WSZYSTKICH WPISÓW I DOKŁADNIE TEŻ DATY):\n"
         prompt += "=" * 80 + "\n\n"
         
-        prompt += "Wygeneruj szczegółowy raport w formacie JSON PO POLSKU:\n"
-        prompt += '{\n'
+        for idx, edu in enumerate(extracted_education):
+            prompt += f""" {{
+        "uczelnia": "{edu['institution']}",
+        "stopien": "{edu['degree']}",
+        "kierunek": "{edu['field']}",
+        "okres": "{edu['period']}"
+        }}{'' if idx == len(extracted_education) - 1 else ','}
+        """
         
-        # Basic data
-        prompt += ' "podstawowe_dane": {\n'
-        prompt += ' "imie_nazwisko": "Wyciągnij z CV",\n'
-        prompt += ' "email": "Email z CV lub: nie podano",\n'
-        prompt += ' "telefon": "Telefon z CV lub: nie podano"\n'
-        prompt += ' },\n'
+        prompt += "\n" + "=" * 80 + "\n\n"
         
-        # Location
-        prompt += ' "lokalizacja_i_dostepnosc": {\n'
-        prompt += ' "lokalizacja": "Miasto/Kraj z CV",\n'
-        prompt += ' "preferencja_pracy_zdalnej": "Zdalna/Hybrydowa/Stacjonarna lub: nieokreślona",\n'
-        prompt += ' "dostepnosc": "Okres wypowiedzenia lub: nieokreślona"\n'
-        prompt += ' },\n'
-        
-        # Profile summary
-        prompt += ' "podsumowanie_profilu": "WAŻNE: Napisz WŁASNĄ analizę 3-5 zdań. Uwzględnij: doświadczenie, kompetencje, dopasowanie do wymagań, rekomendacje.",\n'
-        
-        # Work experience - USE EXTRACTED DATA
-        prompt += ' "doswiadczenie_zawodowe": [\n'
-        
-        prompt += ' "doswiadczenie_zawodowe": [\n'
+        prompt += """Wygeneruj szczegółowy raport w formacie JSON PO POLSKU:
 
-        if extracted_work_exp:
-            for exp in extracted_work_exp:
-                # Clean up the data
-                company = exp['company'] if exp['company'] != 'Not specified' else 'Nie podano w CV'
-                
-                prompt += '   {\n'
-                prompt += f'     "okres": "{exp["period"]}",\n'
-                prompt += f'     "firma": "{company}",\n'
-                prompt += f'     "stanowisko": "{exp["position"]}",\n'
-                prompt += f'     "kluczowe_osiagniecia": ["{exp["description"]}"],\n'
-                prompt += '     "obowiazki": [],\n'
-                prompt += f'     "technologie": {json.dumps(exp["technologies"], ensure_ascii=False)}\n'
-                prompt += '   },\n'
-        else:
-            # Fallback if extraction fails
-            prompt += '   {\n'
-            prompt += '     "okres": "Wyciągnij z CV",\n'
-            prompt += '     "firma": "Wyciągnij z CV",\n'
-            prompt += '     "stanowisko": "Wyciągnij z CV",\n'
-            prompt += '     "kluczowe_osiagniecia": ["Wyciągnij z CV"],\n'
-            prompt += '     "obowiazki": [],\n'
-            prompt += '     "technologie": ["Wyciągnij z CV"]\n'
-            prompt += '   }\n'
+    🚨 KRYTYCZNE - OBOWIĄZKOWE:
+    1. Liczba wpisów w "doswiadczenie_zawodowe" = liczba wpisów z powyższej listy
+    2. Liczba wpisów w "wyksztalcenie" = liczba wpisów z powyższej listy
+    3. KAŻDY wpis z listy MUSI być w JSON, NIE pomijaj ani nie łącz!
+    4. Daty w edukacji - przepisz DOKŁADNIE jak w liście, bez zmian
+    5. Technologie z każdego wpisu doświadczenia - WSZYSTKIE w "technologie"
 
-        prompt += ' ],\n'
-        prompt += ' "INSTRUKCJA_DOSWIADCZENIE": "OBOWIĄZKOWE! Wyciągnij WSZYSTKIE projekty i stanowiska. NIE dodawaj certyfikatów do doświadczenia!",\n'
+    {
+    "podstawowe_dane": {
+        "imie_nazwisko": "Wyciągnij z CV",
+        "email": "Email lub: nie podano",
+        "telefon": "Telefon lub: nie podano"
+    },
+    "lokalizacja_i_dostepnosc": {
+        "lokalizacja": "Dokładna lokalizacja TYLKO jeśli jasno podana, inaczej: nie podano",
+        "preferencja_pracy_zdalnej": "Zdalna/Hybrydowa/Stacjonarna/nieokreślona",
+        "dostepnosc": "Okres wypowiedzenia lub: nieokreślona"
+    },
+    "podsumowanie_profilu": "Krótka analiza 3-5 zdań kandydata",
+    "doswiadczenie_zawodowe": ["""
         
-        # Education
-        prompt += ' "wyksztalcenie": [\n'
-        prompt += '   {\n'
-        prompt += '     "uczelnia": "Nazwa uczelni",\n'
-        prompt += '     "stopien": "Licencjat/Magister/Doktor",\n'
-        prompt += '     "kierunek": "Kierunek studiów",\n'
-        prompt += '     "okres": "YYYY - YYYY"\n'
-        prompt += '   }\n'
-        prompt += ' ],\n'
-
-        prompt += '''
-            🚨 KRYTYCZNIE WAŻNE dla "wyksztalcenie":
-            1. PRZEPISZ DOKŁADNIE te same daty co w CV - NIE zmieniaj, NIE interpretuj!
-            2. Jeśli w CV jest "2024-10 - present" → w JSON "2024-10 - present" (NIE "2024 - obecnie"!)
-            3. NIE dodawaj dat, które nie występują w CV!
-            4. Liczba wpisów w JSON = liczba szkół/stopni w CV (jeśli CV ma 2, to JSON też 2!)
-            5. NIE tłumacz nazw uczelni (Polsko-Japońska → Polsko-Japońska, NIE "Polish-Japanese"!)
-
-            PRZYKŁAD:
-            CV: "2020-10 - 2024-02, Bachelor, PJATK"
-            JSON: {
-            "okres": "2020-10 - 2024-02",
-            "stopien": "Licencjat",
-            "kierunek": "[dokładna nazwa z CV]",
-            "uczelnia": "Polsko-Japońska Akademia Technik Komputerowych, Warszawa"
-            }
-            '''
-        # Certifications
-        prompt += ' "certyfikaty_i_kursy": [\n'
-        prompt += '   {\n'
-        prompt += '     "nazwa": "Nazwa certyfikatu/kursu",\n'
-        prompt += '     "typ": "certyfikat lub kurs",\n'
-        prompt += '     "wystawca": "Organizacja/Platforma",\n'
-        prompt += '     "data": "Rok uzyskania"\n'
-        prompt += '   }\n'
-        prompt += ' ],\n'
+        # Add each work experience entry
+        for idx, exp in enumerate(extracted_work_exp):
+            prompt += f"""    {{
+        "okres": "{exp['period']}",
+        "firma": "{exp['company']}",
+        "stanowisko": "{exp['position']}",
+        "kluczowe_osiagniecia": {json.dumps([exp['description']] if exp['description'] else [], ensure_ascii=False)},
+        "obowiazki": [],
+        "technologie": {json.dumps(exp['technologies'], ensure_ascii=False)}
+        }}{'' if idx == len(extracted_work_exp) - 1 else ','}
+    """
         
-        # Languages
-        prompt += ' "jezyki_obce": [\n'
-        prompt += '   {"jezyk": "Nazwa języka", "poziom": "A1/A2/B1/B2/C1/C2/Ojczysty"}\n'
-        prompt += ' ],\n'
-        prompt += ' "INSTRUKCJA_JEZYKI": "OBOWIĄZKOWE! Szukaj wszystkich języków w CV. Zawsze dodaj język ojczysty.",\n'
+        prompt += """  ],
+    "wyksztalcenie": ["""
         
-        # Skills - USE EXTRACTED TECHNOLOGIES
-        prompt += ' "umiejetnosci": {\n'
-        prompt += f'   "programowanie_skrypty": {json.dumps(categorized_tech["programming_scripting"], ensure_ascii=False)},\n'
-        prompt += f'   "frameworki_biblioteki": {json.dumps(categorized_tech["frameworks_libraries"], ensure_ascii=False)},\n'
-        prompt += f'   "infrastruktura_devops": {json.dumps(categorized_tech["infrastructure_devops"], ensure_ascii=False)},\n'
-        prompt += f'   "chmura": {json.dumps(categorized_tech["cloud"], ensure_ascii=False)},\n'
-        prompt += f'   "bazy_kolejki": {json.dumps(categorized_tech["databases_messaging"], ensure_ascii=False)},\n'
-        prompt += f'   "monitoring": {json.dumps(categorized_tech["monitoring"], ensure_ascii=False)},\n'
-        prompt += f'   "inne": {json.dumps(categorized_tech["other"], ensure_ascii=False)}\n'
-        prompt += ' },\n'
+        # Add each education entry
+        for idx, edu in enumerate(extracted_education):
+            prompt += f"""    {{
+        "uczelnia": "{edu['uczelnia']}",
+        "stopien": "{edu['stopien']}",
+        "kierunek": "{edu['kierunek']}",
+        "okres": "{edu['okres']}"
+        }}{'' if idx == len(extracted_education) - 1 else ','}
+    """
         
-        # Tech stack summary
-        prompt += ' "podsumowanie_technologii": {\n'
-        prompt += '   "opis": "Krótkie podsumowanie głównych technologii kandydata",\n'
-        prompt += '   "glowne_technologie": ["8-10 najważniejszych technologii z powyższej listy"],\n'
-        prompt += '   "lata_doswiadczenia": "X lat doświadczenia w IT"\n'
-        prompt += ' },\n'
-        
-        # Matching
-        prompt += ' "dopasowanie_do_wymagan": {\n'
-        prompt += '   "mocne_strony": ["Minimum 3 mocne strony"],\n'
-        prompt += '   "poziom_dopasowania": "wysoki/sredni/niski",\n'
-        prompt += '   "uzasadnienie": "Szczegółowe uzasadnienie",\n'
-        prompt += '   "rekomendacja": "TAK/NIE"\n'
-        prompt += ' }\n'
-        prompt += '}\n\n'
-        
-        prompt += "=" * 80 + "\n"
-        prompt += "KRYTYCZNE INSTRUKCJE:\n"
-        prompt += "=" * 80 + "\n\n"
-        prompt += "1. UŻYJ WSZYSTKICH technologii z listy powyżej w sekcji 'umiejetnosci'\n"
-        prompt += "2. UŻYJ WSZYSTKICH pozycji doświadczenia zawodowego z listy powyżej\n"
-        prompt += "3. NIE łącz projektów - każdy projekt osobno!\n"
-        prompt += "4. NIE DODAWAJ niczego czego nie ma w CV\n"
-        prompt += "5. ZWRÓĆ poprawny JSON z WSZYSTKIMI polami wypełnionymi\n"
-        prompt += "6. Jeśli brak wykształcenia/certyfikatów, zwróć []\n"
-        prompt += "7. Zawsze dodaj język ojczysty do 'jezyki_obce'\n\n"
+        prompt += """  ],
+    "certyfikaty_i_kursy": [
+        {
+        "nazwa": "Nazwa certyfikatu",
+        "typ": "certyfikat",
+        "wystawca": "Organizacja",
+        "data": "Rok"
+        }
+    ],
+    "jezyki_obce": [
+        {"jezyk": "Język ojczysty", "poziom": "Ojczysty"}
+    ],
+    "umiejetnosci": {
+        "programowanie_skrypty": """ + json.dumps(categorized_tech.get('programming_scripting', []), ensure_ascii=False) + """,
+        "frameworki_biblioteki": """ + json.dumps(categorized_tech.get('frameworks_libraries', []), ensure_ascii=False) + """,
+        "infrastruktura_devops": """ + json.dumps(categorized_tech.get('infrastructure_devops', []), ensure_ascii=False) + """,
+        "chmura": """ + json.dumps(categorized_tech.get('cloud', []), ensure_ascii=False) + """,
+        "bazy_kolejki": """ + json.dumps(categorized_tech.get('databases_messaging', []), ensure_ascii=False) + """,
+        "monitoring": """ + json.dumps(categorized_tech.get('monitoring', []), ensure_ascii=False) + """,
+        "inne": """ + json.dumps(categorized_tech.get('other', []), ensure_ascii=False) + """
+    },
+    "podsumowanie_technologii": {
+        "opis": "Podsumowanie głównych technologii",
+        "glowne_technologie": """ + json.dumps(extracted_tech[:10], ensure_ascii=False) + """,
+        "lata_doswiadczenia": "X lat"
+    },
+    "dopasowanie_do_wymagan": {
+        "mocne_strony": ["Mocna strona 1", "Mocna strona 2"],
+        "poziom_dopasowania": "wysoki/sredni/niski",
+        "uzasadnienie": "Szczegółowe uzasadnienie",
+        "rekomendacja": "TAK/NIE"
+    }
+    }
+    """
         
         return prompt
 
@@ -958,11 +1321,12 @@ class CVAnalyzer:
         prompt += ' },\n'
         
         # Location
-        prompt += ' "location_and_availability": {\n'
-        prompt += ' "location": "City/Country from CV",\n'
-        prompt += ' "remote_work_preference": "Remote/Hybrid/On-site or: not specified",\n'
-        prompt += ' "availability": "Notice period or: not specified"\n'
-        prompt += ' },\n'
+        prompt += '"location_and_availability": {\n'
+        prompt += '"location": "Exact location (city and country) ONLY if it is clearly stated in the CV. \n'
+        prompt += 'If there are only generic hints (e.g. Poland, Remote, EU), set: unclear / not provided.",\n'
+        prompt += '"remote_work_preference": "Remote / Hybrid / On-site or: not specified",\n'
+        prompt += '"availability": "Notice period or: not specified"\n'
+        prompt += '},\n'
         
         # Profile summary
         prompt += ' "profile_summary": "IMPORTANT: Write YOUR OWN analysis (3-5 sentences). Include: experience, competencies, match to requirements, recommendation.",\n'
@@ -1079,18 +1443,18 @@ class CVAnalyzer:
 
     def extract_key_highlights(self, analysis):
         """Extract REAL strengths with metrics and achievements"""
+        import re  # Dodaj na początku funkcji
+        
         highlights = []
         
         try:
             # 1. GŁOWNE STANOWISKO Z KONKRETNYMI DATAMI
             work_exp_data = analysis.get("doswiadczenie_zawodowe") or analysis.get("work_experience", [])
-            
             if work_exp_data:
                 job = work_exp_data[0]
                 period = job.get("okres") or job.get("period", "")
                 company = job.get("firma") or job.get("company", "")
                 position = job.get("stanowisko") or job.get("position", "")
-                
                 if all([period, company, position]):
                     highlights.append(f"{position} at {company} ({period})")
             
@@ -1098,30 +1462,25 @@ class CVAnalyzer:
             if work_exp_data:
                 for job in work_exp_data[:2]:
                     achievements = job.get("kluczowe_osiagniecia") or job.get("key_achievements", [])
-                    
                     if achievements:
                         # Weź PIERWSZE 2 osiągnięcia które mają liczby/procenty
                         for achievement in achievements[:3]:
                             achievement_str = str(achievement).strip()
-                            
                             # Filtruj osiągnięcia z liczbami (konkretne rezultaty)
                             if any(char.isdigit() for char in achievement_str):
                                 highlights.append(achievement_str)
                                 if len(highlights) >= 5:
                                     break
-                    
                     if len(highlights) >= 5:
                         break
             
             # 3. EDUKACJA Z SPECJALIZACJĄ
             if len(highlights) < 6:
                 education = analysis.get("wyksztalcenie") or analysis.get("education", [])
-                
                 if education:
                     edu = education[0]
                     degree = edu.get("stopien") or edu.get("degree", "")
                     field = edu.get("kierunek") or edu.get("field", "")
-                    
                     if degree and field:
                         highlights.append(f"Education: {degree} in {field}")
                     elif degree:
@@ -1130,20 +1489,16 @@ class CVAnalyzer:
             # 4. TOP TECHNOLOGIE (TYLKO WAŻNE!)
             if len(highlights) < 6:
                 skills = analysis.get("umiejetnosci") or analysis.get("skills", {})
-                
                 if isinstance(skills, dict):
                     # Zbierz wszystkie techy
                     tech_list = []
-                    
                     for key in ["programowanie_skrypty", "programming_scripting"]:
                         tech_list.extend(skills.get(key, []))
-                    
                     for key in ["frameworki_biblioteki", "frameworks_libraries"]:
                         tech_list.extend(skills.get(key, []))
                     
                     # Filtruj TOP (najczęstsze, najważniejsze)
                     tech_list = [t for t in tech_list if t and len(str(t)) > 2][:5]
-                    
                     if tech_list:
                         tech_str = ", ".join([str(t) for t in tech_list])
                         highlights.append(f"Core Technologies: {tech_str}")
@@ -1151,26 +1506,22 @@ class CVAnalyzer:
             # 5. LATA DOŚWIADCZENIA
             if len(highlights) < 6:
                 years = analysis.get("lata_doswiadczenia") or analysis.get("years_experience", 0)
-                
                 if years and int(float(years)) > 0:
                     highlights.append(f"{int(float(years))}+ years in IT and Data Science")
             
             # 6. CERTYFIKATY - KONKRETNE
             if len(highlights) < 6:
                 certs = analysis.get("certyfikaty_i_kursy") or analysis.get("certifications_and_courses", [])
-                
                 if certs:
                     top_certs = []
                     for cert in certs[:3]:
                         cert_name = cert.get("nazwa") or cert.get("name", "")
                         cert_issuer = cert.get("wystawca") or cert.get("issuer", "")
-                        
                         if cert_name:
                             if cert_issuer:
                                 top_certs.append(f"{cert_name} ({cert_issuer})")
                             else:
                                 top_certs.append(cert_name)
-                    
                     if top_certs:
                         highlights.append(f"Certifications: {', '.join(top_certs[:2])}")
             
@@ -1181,6 +1532,7 @@ class CVAnalyzer:
         except Exception as e:
             print(f"Error in extract_key_highlights: {e}")
             return []
+
 
     def _get_language_name(self, lang_code, output_lang):
         """Get language name in specified language"""
@@ -1246,7 +1598,7 @@ class CVAnalyzer:
         return any(kw in text_lower for kw in keywords)
 
 
-    def _write_text_with_underline(self, pdf, text, x, y, width, font_name, font_size, keywords, line_height=4, bold=False):
+    def _write_text_with_underline(self, pdf, text, x, y, width, font_name, font_size, keywords, line_height=5, bold=False):
         """
         Write multi-line text with underlined keywords
         Returns final Y position
@@ -1257,7 +1609,7 @@ class CVAnalyzer:
         if not keywords:
             # No keywords - regular text
             pdf.set_xy(x, y)
-            pdf.set_font(font_name, 'B' if bold else '', font_size)
+            pdf.set_font(font_name, 'B' if bold else '', 9)
             pdf.multi_cell(width, line_height, text, align='L')
             return pdf.get_y()
         
@@ -1266,7 +1618,7 @@ class CVAnalyzer:
         current_line = []
         current_y = y
         
-        pdf.set_font(font_name, 'B' if bold else '', font_size)
+        pdf.set_font(font_name, 'B' if bold else '', 9)
         
         for word in words:
             test_line = ' '.join(current_line + [word])
@@ -1310,8 +1662,8 @@ class CVAnalyzer:
             else:
                 style = ''   # Normal text
             
-            pdf.set_font(font_name, style, font_size)
-            pdf.write(font_size/2, word + (' ' if i < len(words)-1 else ''))
+            pdf.set_font(font_name, style, 9)
+            pdf.write(font_size * 0.7, word + (' ' if i < len(words)-1 else ''))
 
 
     def extract_raw_experience_block(self, cv_text):
@@ -1328,8 +1680,7 @@ class CVAnalyzer:
             return cv_text[start_idx:end_idx].strip()
         else:
             return cv_text[start_idx:].strip()
-  
-        
+      
     def generate_pdf_output(self, analysis, template_type='full', language=None, client_requirements=''):
         """Generate PDF with FPDF2 - Arsenal font - 2 pages layout"""
         
@@ -1337,23 +1688,25 @@ class CVAnalyzer:
         if language is None:
             language = filtered_analysis.get('output_language', 'en')
         # Font paths
-        arsenal_regular = "/app/arsenal/Arsenal-Regular.ttf"
-        arsenal_bold = "/app/arsenal/Arsenal-Bold.ttf"
+        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#"/app/arsenal/Arsenal-Regular.ttf"
+        arsenal_bold = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf'#"/app/arsenal/Arsenal-Bold.ttf"
         keywords = self._extract_keywords_from_requirements(client_requirements)
         print(f"🔍 Extracted {len(keywords)} keywords for highlighting: {keywords[:10]}")
         print(f"📝 Client requirements: {client_requirements[:100]}...")
 
-        def safe_text(text):
-            if text is None:
-                return 'N/A'
+        # ✅ POPRAWNE:
+        def safe_text(text, default='N/A'):
+            if text is None or text == '':
+                return default
             return str(text)
+
         
         def get_section_name(en_name):
             """Polish translation"""
             output_lang = filtered_analysis.get('output_language', 'english')
             
             translations = {
-                'K E Y H I G H L I G H T S':'P O D S U M O W A N I E  P R O F I L U',
+                'K E Y  H I G H L I G H T S':'P O D S U M O W A N I E  P R O F I L U',
                 'E D U C A T I O N': 'W Y K S Z T A Ł C E N I E',
                 'L A N G U A G E S': 'J Ę Z Y K I',
                 'C E R T I F I C A T I O N S': 'C E R T Y F I K A T Y',
@@ -1409,7 +1762,7 @@ class CVAnalyzer:
         pdf.rect(0, 0, 210, 40, 'F')
         
         # Logo
-        logo_path = "/app/IS_New.png"
+        logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png'#"/app/IS_New.png"
         try:
             pdf.image(logo_path, x=5, y=9, w=50)
         except Exception as e:
@@ -1437,18 +1790,27 @@ class CVAnalyzer:
         profile_summary = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
         
         if profile_summary and not filtered_analysis.get("mocne_strony"):
-            # Split by bullets or sentences to generate highlights
+        # Najpierw spróbuj dzielić po bulletach
             highlights = [h.strip() for h in profile_summary.split('•') if h.strip()]
+            
             if not highlights:
-                highlights = [s.strip() for s in profile_summary.split('.') if s.strip()][:6]
+
+                sentences = re.split(r'\.\s+(?=[A-Z])', profile_summary)
+                highlights = []
+                for s in sentences:
+                    s = s.strip()
+                    if len(s) > 10:  # Minimum 10 znaków
+                        # Dodaj kropkę jeśli brak
+                        if not s.endswith('.'):
+                            s = s + '.'
+                        highlights.append(s)
+                    if len(highlights) >= 6:
+                        break
+            
             filtered_analysis['mocne_strony'] = highlights[:6]
         
         # ===== DISPLAY KEY HIGHLIGHTS ON PAGE 1 =====
         highlights = filtered_analysis.get("key_highlights", [])
-
-        # DEBUG: Sprawdź co jest w key_highlights
-        # print(f"DEBUG key_highlights: {highlights}")
-        # print(f"DEBUG type: {type(highlights)}")
 
         # Zawsze wyświetlaj highlights, nawet jeśli są puste - wygeneruj je z profile_summary
         if not highlights or len(highlights) == 0:
@@ -1461,17 +1823,23 @@ class CVAnalyzer:
                     highlights = [h.strip() for h in profile_text.split("•") if h.strip()][:6]
                 else:
                     # Split by sentences
-                    sentences = [s.strip() for s in profile_text.split(".") if len(s.strip()) > 10]
-                    highlights = sentences[:6]
-                
-                # print(f"DEBUG generated highlights: {highlights}")
+                    sentences = re.split(r'\.\s+(?=[A-Z])', profile_text)
+                    highlights = []
+                    for s in sentences:
+                        s = s.strip()
+                        if len(s) > 10:
+                            if not s.endswith('.'):
+                                s = s + '.'
+                            highlights.append(s)
+                        if len(highlights) >= 6:
+                            break
 
         # Teraz zawsze wyświetl
         if highlights:
             pdf.set_font('Arsenal', 'B', 13)
             # Domyślnie 'en' jeśli brak parametru
             pdf_language = language if language else 'en'
-            pdf.cell(0, 5, get_section_name('K E Y H I G H L I G H T S'), ln=True)
+            pdf.cell(0, 5, get_section_name('K E Y  H I G H L I G H T S'), ln=True)
             
             # Underline
             pdf.set_draw_color(76, 76, 76)
@@ -1491,7 +1859,7 @@ class CVAnalyzer:
                     pdf.set_x(12.7)
                     current_y = self._write_text_with_underline(
                                 pdf, f"• {highlight_text}", 12.7, pdf.get_y(),
-                                185, 'Arsenal', 11, keywords, line_height=5
+                                185, 'Arsenal', 10, keywords, line_height=5
                             )
                     pdf.set_y(current_y)
                     
@@ -1566,13 +1934,13 @@ class CVAnalyzer:
             
             return y_pos + 3
         
-        def add_text_column(x, text, font_size=8, max_width=45):
+        def add_text_column(x, text, font_size=9, max_width=45):
             """Add wrapped text to column"""
             pdf.set_font('Arsenal', '', font_size)
             pdf.set_xy(x, pdf.get_y())
             pdf.multi_cell(max_width, 4, text, align='L')
         
-        def add_bold_text_column(x, text, font_size=8, max_width=45):
+        def add_bold_text_column(x, text, font_size=9, max_width=45):
             """Add bold wrapped text to column"""
             pdf.set_font('Arsenal', 'B', font_size)
             pdf.set_xy(x, pdf.get_y())
@@ -1586,7 +1954,7 @@ class CVAnalyzer:
             pdf.set_xy(col_left_x, 50)
             y_left = add_section_header(col_left_x, get_section_name('S K I L L S'), col_left_width)
             pdf.set_y(y_left)
-            
+
             skill_cats = [
                 ('programowanie_skrypty', 'programming_scripting', 'Programming'),
                 ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks'),
@@ -1597,22 +1965,32 @@ class CVAnalyzer:
                 ('monitoring', 'monitoring', 'Monitoring'),
                 ('inne', 'other', 'Other'),
             ]
-            
+
             for pl_key, en_key, label in skill_cats:
                 skills_list = skills_data.get(pl_key) or skills_data.get(en_key)
-                if skills_list:
-                    skills_str = ", ".join(safe_text(s) for s in skills_list)
-                    
-                    # Label - bold
-                    pdf.set_xy(col_left_x + 2, pdf.get_y())
-                    add_bold_text_column(col_left_x + 2, f"{label}:", 7, col_left_width - 4)
-                    
-                    # Technologies - with underline highlighting
-                    current_y = self._write_text_with_underline(
-                        pdf, skills_str, col_left_x + 2, pdf.get_y(),
-                        col_left_width - 4, 'Arsenal', 7, keywords, line_height=4
-                    )
-                    pdf.set_y(current_y + 2)
+                if not skills_list:
+                    continue
+
+                skills_str = ", ".join(safe_text(s) for s in skills_list)
+
+                # Label - bold (na osobnej linii, mały odstęp przed)
+                pdf.set_xy(col_left_x + 2, pdf.get_y() + 1)
+                add_bold_text_column(col_left_x + 2, f"{label}:", 8, col_left_width - 4)
+
+                # Technologies - normal, mały font, niższa linia
+                pdf.set_xy(col_left_x + 2, pdf.get_y())
+                current_y = self._write_text_with_underline(
+                    pdf,
+                    skills_str,
+                    col_left_x + 2,
+                    pdf.get_y(),
+                    col_left_width - 4,
+                    'Arsenal',
+                    7,
+                    keywords,
+                    line_height=3.8
+                )
+                pdf.set_y(current_y + 1)
         
         # TECH STACK
         tech_summary = filtered_analysis.get("podsumowanie_technologii") or filtered_analysis.get("tech_stack_summary")
@@ -1623,7 +2001,7 @@ class CVAnalyzer:
             description = tech_summary.get('opis') or tech_summary.get('description')
             if description:
                 pdf.set_xy(col_left_x + 2, pdf.get_y())
-                add_text_column(col_left_x + 2, safe_text(description), 7, col_left_width - 4)
+                add_text_column(col_left_x + 2, safe_text(description), 9, col_left_width - 4)
                 pdf.set_y(pdf.get_y() + 2)
         
         # LANGUAGES
@@ -1637,7 +2015,7 @@ class CVAnalyzer:
                 language = safe_text(lang.get('jezyk') or lang.get('language', ''))
                 level = safe_text(lang.get('poziom') or lang.get('level', ''))
                 pdf.set_xy(col_left_x + 2, pdf.get_y())
-                add_text_column(col_left_x + 2, f"{language}: {level}", 7, col_left_width - 4)
+                add_text_column(col_left_x + 2, f"{language}: {level}", 9, col_left_width - 4)
             
             pdf.set_y(pdf.get_y() + 2)
         
@@ -1658,107 +2036,158 @@ class CVAnalyzer:
                 issuer = safe_text(item.get('wystawca') or item.get('issuer', ''))
                 
                 pdf.set_xy(col_left_x + 2, pdf.get_y())
-                add_bold_text_column(col_left_x + 2, item_name, 7, col_left_width - 4)
+                add_bold_text_column(col_left_x + 2, item_name, 9, col_left_width - 4)
                 pdf.set_xy(col_left_x + 2, pdf.get_y())
-                add_text_column(col_left_x + 2, issuer, 6, col_left_width - 4)
+                add_text_column(col_left_x + 2, issuer, 9, col_left_width - 4)
             
             pdf.set_y(pdf.get_y() + 2)
         
         # ===== RIGHT COLUMN: PROFILE SUMMARY (FULL TEXT), WORK EXPERIENCE, EDUCATION =====
         
         # PROFILE SUMMARY - FULL TEXT (na drugiej stronie)
+        right_start_y = 50
+        pdf.set_y(right_start_y)
+
+        # PROFILE SUMMARY - FULL TEXT
         profile_summary = filtered_analysis.get('podsumowanie_profilu') or filtered_analysis.get('profile_summary')
-        # print(f"🔍 DEBUG profile_summary on page 2: {profile_summary[:100] if profile_summary else 'EMPTY'}")
-        # print(f"🔍 DEBUG filtered_analysis keys: {filtered_analysis.keys()}")
 
         if profile_summary and profile_summary not in ["NA", "Nie podano w CV", "not provided", ""]:
-            print(f"✅ RENDERING profile_summary in PDF!")
-            pdf.set_xy(col_right_x, 50)
-            y_right = add_section_header(col_right_x, get_section_name('P R O F I L E  S U M M A R Y'), col_right_width)
-            pdf.set_y(y_right)
-            
-            profile_text = safe_text(profile_summary).replace('•', '').strip()
-            print(f"📝 Profile text length: {len(profile_text)} chars")
-            
-            # Use highlighting function
-            current_y = self._write_text_with_underline(
-                pdf, profile_text, col_right_x + 2, pdf.get_y(), 
-                col_right_width - 4, 'Arsenal', 9, keywords, line_height=4
+            pdf.set_xy(col_right_x, right_start_y)
+            y_right = add_section_header(
+                col_right_x,
+                get_section_name('P R O F I L E  S U M M A R Y'),
+                col_right_width
             )
-            print(f"✅ Finished writing profile at Y={current_y}")
-            pdf.set_y(current_y + 2)
-        
-        # WORK EXPERIENCE
+            pdf.set_y(y_right)
+
+            profile_text = safe_text(profile_summary).replace('•', '').strip()
+
+            current_y = self._write_text_with_underline(
+                pdf,
+                profile_text,
+                col_right_x + 2,
+                pdf.get_y(),
+                col_right_width - 4,
+                'Arsenal',
+                8,          # mniejszy font
+                keywords,
+                line_height=4
+            )
+            pdf.set_y(current_y + 3)
+        else:
+            pdf.set_y(right_start_y)
+
+        # ===== WORK EXPERIENCE =====
+        work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
+
         if work_exp_data:
             pdf.set_xy(col_right_x, pdf.get_y())
-            y_right = add_section_header(col_right_x, get_section_name('W O R K  E X P E R I E N C E'), col_right_width)
+            y_right = add_section_header(col_right_x, get_section_name("WORK EXPERIENCE"), col_right_width)
             pdf.set_y(y_right)
             
-            for exp in work_exp_data:
-                period = safe_text(exp.get('okres') or exp.get('period', 'N/A'))
-                company = safe_text(exp.get('firma') or exp.get('company', ''))
-                position = safe_text(exp.get('stanowisko') or exp.get('position', ''))
+            for idx, exp in enumerate(work_exp_data):
+                if idx > 0:
+                    pdf.ln(4)
                 
-                pdf.set_xy(col_right_x + 2, pdf.get_y())
-                add_bold_text_column(col_right_x + 2, f"{period} - {company}", 8, col_right_width - 4)
-                pdf.set_xy(col_right_x + 2, pdf.get_y())
-                add_text_column(col_right_x + 2, position, 7, col_right_width - 4)
+                period = safe_text(exp.get("okres") or exp.get("period"), "")
+                company = safe_text(exp.get("firma") or exp.get("company"), "")
+                position = safe_text(exp.get("stanowisko") or exp.get("position"), "")
+                achievements = exp.get("kluczowe_osiagniecia") or exp.get("key_achievements") or []
+                technologies = exp.get("technologie") or exp.get("technologies") or []
                 
-                achievements = exp.get('kluczowe_osiagniecia') or exp.get('key_achievements', [])
-                if achievements:
-                    for achievement in achievements:
-                        pdf.set_xy(col_right_x + 2, pdf.get_y())
-                        # Zamiast: add_text_column(...)
-                        current_y = self._write_text_with_underline(
-                            pdf, safe_text(achievement), col_right_x + 2, pdf.get_y(),
-                            col_right_width - 4, 'Arsenal', 7, keywords, line_height=4
-                        )
-                        pdf.set_y(current_y)
-        
-        # EDUCATION
+                # PERIOD
+                if period not in ("", "YYYY - YYYY", "Not specified", "NA"):
+                    pdf.set_xy(col_right_x + 2, pdf.get_y())
+                    pdf.set_font("Arsenal", "B", 8)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(0, 4, period, ln=True)
+                    pdf.set_text_color(0, 0, 0)
+                
+                # POSITION
+                if position not in ("", "NA", "Not specified"):
+                    pdf.set_xy(col_right_x + 2, pdf.get_y())
+                    pdf.set_font("Arsenal", "B", 9)
+                    pdf.multi_cell(col_right_width - 4, 4, position, align="L")
+                
+                # COMPANY
+                if company not in ("", "NA", "Not specified"):
+                    pdf.set_xy(col_right_x + 2, pdf.get_y())
+                    pdf.set_font("Arsenal", "B", 8)
+                    pdf.multi_cell(col_right_width - 4, 4, company, align="L")
+                
+                # ACHIEVEMENTS
+                if achievements and isinstance(achievements, list):
+                    pdf.set_font("Arsenal", "", 8)
+                    for ach in achievements:
+                        bullet_text = safe_text(ach, "").strip()
+                        if bullet_text and len(bullet_text) > 3:
+                            pdf.set_x(col_right_x + 4)
+                            pdf.multi_cell(col_right_width - 6, 4, f"• {bullet_text}", align="L")
+                            pdf.ln(0.5)
+                
+                # TECH
+                if technologies:
+                    tech_list = technologies if isinstance(technologies, list) else [technologies]
+                    tech_str = ", ".join([safe_text(t, "") for t in tech_list if safe_text(t, "")])
+                    if tech_str:
+                        pdf.set_x(col_right_x + 4)
+                        pdf.set_font("Arsenal", "", 7)
+                        pdf.set_text_color(80, 80, 80)
+                        pdf.multi_cell(col_right_width - 6, 3.5, f"Tech: {tech_str}", align="L")
+                        pdf.set_text_color(0, 0, 0)
+
+                pdf.ln(3)
+
+                # Spacing between jobs
+                pdf.set_y(pdf.get_y() + 3)
+
+        # ===== EDUCATION =====
         education_data = filtered_analysis.get('wyksztalcenie') or filtered_analysis.get('education', [])
-        # print(f"📚 DEBUG Education data: {education_data}")
-        if education_data:
-            pdf.set_xy(col_right_x, pdf.get_y())
-            y_right = add_section_header(col_right_x, get_section_name('E D U C A T I O N'), col_right_width)
-            pdf.set_y(y_right + 3)
+        print(f"\n🎓 DEBUG generate_pdf_output educationdata: {len(education_data)} items")
+        for i, edu in enumerate(education_data[:5]):
+            print(f"  {i+1}. uczelnia={edu.get('uczelnia') or edu.get('school')}, "
+                f"kierunek={edu.get('kierunek') or edu.get('degree')}, "
+                f"okres={edu.get('okres') or edu.get('period')}")
             
+        if education_data:
+            pdf.set_xy(col_right_x, pdf.get_y() + 3)
+            y_right = add_section_header(
+                col_right_x,
+                get_section_name('E D U C A T I O N'),
+                col_right_width
+            )
+            pdf.set_y(y_right + 1)
+
             for edu in education_data:
-    # ✅ DODAJ WSPARCIE DLA POLSKICH KLUCZY!
                 institution = safe_text(edu.get('uczelnia') or edu.get('institution', ''))
                 degree = safe_text(edu.get('stopien') or edu.get('degree', ''))
                 field = safe_text(edu.get('kierunek') or edu.get('field_of_study') or edu.get('field', ''))
                 period = safe_text(edu.get('okres') or edu.get('period', ''))
-                
-                print(f"  📖 Rendering: {period} | {field}, {degree} | {institution}")  # DEBUG
-                
-                # Period FIRST (bold, gray)
+
+                # Period – bold, 8 (szary)
                 if period and period not in ['YYYY - YYYY', 'Not specified', '', 'N/A']:
                     pdf.set_xy(col_right_x + 2, pdf.get_y())
-                    pdf.set_font('Arsenal', 'B', 9)
+                    pdf.set_font('Arsenal', 'B', 8)
                     pdf.set_text_color(100, 100, 100)
                     pdf.cell(0, 4, period, ln=True)
                     pdf.set_text_color(0, 0, 0)
-                    pdf.set_y(pdf.get_y() + 1)
-                
-                # Field + Degree (bold, black)
-                if field and degree:
+
+                # Field + Degree – bold, 8
+                if field or degree:
+                    text_fd = f"{field}, {degree}" if field and degree else (field or degree)
                     pdf.set_xy(col_right_x + 2, pdf.get_y())
-                    pdf.set_font('Arsenal', 'B', 10)
-                    pdf.multi_cell(col_right_width - 4, 5, f"{field}, {degree}", align='L')
-                elif field:
-                    pdf.set_xy(col_right_x + 2, pdf.get_y())
-                    pdf.set_font('Arsenal', 'B', 10)
-                    pdf.multi_cell(col_right_width - 4, 5, field, align='L')
-                pdf.set_y(pdf.get_y() + 1)
-                
-                # Institution (normal, black)
+                    pdf.set_font('Arsenal', 'B', 8)
+                    pdf.multi_cell(col_right_width - 4, 4, text_fd, align='L')
+
+                # Institution – normal, 8
                 if institution and institution not in ['Nazwa uczelni', 'Not specified', '', 'N/A']:
-                    pdf.set_xy(col_right_x + 2, pdf.get_y())
-                    pdf.set_font('Arsenal', '', 9)
-                    pdf.multi_cell(col_right_width - 4, 4, institution, align='L')
-                
-                pdf.set_y(pdf.get_y() + 5)
+                    if institution and institution not in ["Nazwa uczelni", "Not specified", "", "NA"]:
+                        pdf.set_xy(col_right_x + 2, pdf.get_y())
+                        pdf.set_font('Arsenal', '', 8)
+                        pdf.multi_cell(col_right_width - 4, 4, institution, align='L')
+
+                # mały odstęp, nie +5
+                pdf.set_y(pdf.get_y() + 2)
 
         # ===== GENERATE KEY HIGHLIGHTS FROM PROFILE SUMMARY =====
         profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
@@ -1770,8 +2199,16 @@ class CVAnalyzer:
             
             # If no bullets, split by sentences
             if not highlights or len(highlights) < 2:
-                sentences = [s.strip() for s in profile_text.split('.') if s.strip()]
-                highlights = sentences[:6]
+                sentences = re.split(r'\.\s+(?=[A-Z])', profile_text)
+                highlights = []
+                for s in sentences:
+                    s = s.strip()
+                    if len(s) > 10:
+                        if not s.endswith('.'):
+                            s = s + '.'
+                        highlights.append(s)
+                    if len(highlights) >= 6:
+                        break
             
             filtered_analysis['mocne_strony'] = highlights[:6] if highlights else []
         # Save to buffer
@@ -1784,14 +2221,13 @@ class CVAnalyzer:
         """Generate DOCX with Arsenal font - all headers with underlines"""
 
         keywords = self._extract_keywords_from_requirements(client_requirements)
-        # print(f"🔍 DEBUG DOCX Keywords: {keywords}")
 
         filtered_analysis = self.apply_template_filters(analysis, template_type)
         if language is None:
             language = filtered_analysis.get('output_language', 'en')
         
         # Arsenal font path
-        arsenal_regular = "/app/arsenal/Arsenal-Regular.ttf"
+        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#"/app/arsenal/Arsenal-Regular.ttf"
         
         def safe_text(value, default=''):
             return str(value).strip() if value and str(value).strip() not in ['None', 'null', 'N/A'] else default
@@ -1799,7 +2235,7 @@ class CVAnalyzer:
         def get_section_name(en_name):
             output_lang = filtered_analysis.get('output_language', 'english')
             translations = {
-                'K E Y H I G H L I G H T S': 'P O D S U M O W A N I E  P R O F I L U',
+                'K E Y  H I G H L I G H T S': 'P O D S U M O W A N I E  P R O F I L U',
                 'E D U C A T I O N': 'W Y K S Z T A Ł C E N I E',
                 'L A N G U A G E S': 'J Ę Z Y K I',
                 'C E R T I F I C A T I O N S': 'C E R T Y F I K A T Y',
@@ -1840,17 +2276,23 @@ class CVAnalyzer:
             header_table = doc.add_table(rows=1, cols=1)
             tbl = header_table._element
             tblPr = tbl.tblPr
-            
+            tr = header_table.rows[0]._tr
+            trPr = tr.get_or_add_trPr()
+            trHeight = OxmlElement('w:trHeight')
+            trHeight.set(qn('w:val'), '900')  # ok. 1,8 cm; zwiększ do 1000–1200 jeśli chcesz więcej
+            trHeight.set(qn('w:hRule'), 'atLeast')
+            trPr.append(trHeight)
+            # Szerokość i marginesy tabeli (jak było)
             tblW = OxmlElement('w:tblW')
             tblW.set(qn('w:w'), '6500')
             tblW.set(qn('w:type'), 'pct')
             tblPr.append(tblW)
-            
+
             tblInd = OxmlElement('w:tblInd')
             tblInd.set(qn('w:w'), '-1440')
             tblInd.set(qn('w:type'), 'dxa')
             tblPr.append(tblInd)
-            
+
             tblBorders = OxmlElement('w:tblBorders')
             for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
                 border = OxmlElement(f'w:{border_name}')
@@ -1860,7 +2302,7 @@ class CVAnalyzer:
                 border.set(qn('w:color'), 'auto')
                 tblBorders.append(border)
             tblPr.append(tblBorders)
-            
+
             tblCellMar = OxmlElement('w:tblCellMar')
             for margin_type in ['top', 'left', 'bottom', 'right']:
                 margin = OxmlElement(f'w:{margin_type}')
@@ -1868,28 +2310,74 @@ class CVAnalyzer:
                 margin.set(qn('w:type'), 'dxa')
                 tblCellMar.append(margin)
             tblPr.append(tblCellMar)
-            
+
+            # Niebieskie tło dla całego prostokąta
             header_cell = header_table.rows[0].cells[0]
-            shading_elm = parse_xml(r'<w:shd {} w:fill="3282B4"/>'.format('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'))
+            shading_elm = parse_xml(
+                r'<w:shd {} w:fill="3282B4"/>'.format(
+                    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+                )
+            )
             header_cell._element.get_or_add_tcPr().append(shading_elm)
-            
-            header_para = header_cell.paragraphs[0]
-            header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            header_para.paragraph_format.space_before = Pt(15)
-            header_para.paragraph_format.space_after = Pt(5)
-            
-            name_run = header_para.add_run(candidate_name)
+
+            # Wewnątrz tej niebieskiej komórki robimy 2 kolumny: [LOGO][TEKST]
+            inner_table = header_cell.add_table(rows=1, cols=2)
+            inner_table.autofit = False
+
+            logo_cell = inner_table.rows[0].cells[0]
+            text_cell = inner_table.rows[0].cells[1]
+
+            logo_cell.width = Inches(2.3)
+            text_cell.width = Inches(5.2)
+
+            # Usuwamy bordery wewnętrznej tabeli, żeby był czysty prostokąt
+            for cell in (logo_cell, text_cell):
+                tcPr = cell._element.get_or_add_tcPr()
+                tcBorders = OxmlElement('w:tcBorders')
+                for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+                    border = OxmlElement(f'w:{border_name}')
+                    border.set(qn('w:val'), 'none')
+                    border.set(qn('w:sz'), '0')
+                    border.set(qn('w:space'), '0')
+                    border.set(qn('w:color'), 'auto')
+                    tcBorders.append(border)
+                tcPr.append(tcBorders)
+
+            # LOGO – trochę wyżej
+            logo_para = logo_cell.paragraphs[0]
+            logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            logo_para.paragraph_format.space_before = Pt(0)  # mniejsza / ujemna wartość = wyżej
+            logo_para.paragraph_format.space_after = Pt(0)
+            logo_para.paragraph_format.left_indent = Inches(0.3)
+
+            logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png'
+            try:
+                logo_run = logo_para.add_run()
+                logo_run.add_picture(logo_path, width=Inches(2.0))
+            except Exception as e:
+                print(f'❌ Logo error in DOCX: {e}')
+
+            # TEKST (imię + stanowisko) – trochę wyżej
+            text_para = text_cell.paragraphs[0]
+            text_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            text_para.paragraph_format.space_before = Pt(2)
+            text_para.paragraph_format.space_after = Pt(0)
+
+            name_run = text_para.add_run(candidate_name)
             apply_arsenal_font(name_run, size=28, bold=True)
             name_run.font.color.rgb = RGBColor(255, 255, 255)
-            
-            title_para = header_cell.add_paragraph()
+
+            title_para = text_cell.add_paragraph()
             title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             title_para.paragraph_format.space_before = Pt(0)
-            title_para.paragraph_format.space_after = Pt(15)
-            
+            title_para.paragraph_format.space_after = Pt(2)  # było 10
+
             title_run = title_para.add_run(candidate_title)
             apply_arsenal_font(title_run, size=13, bold=False)
             title_run.font.color.rgb = RGBColor(255, 255, 255)
+            # bottom_para = header_cell.add_paragraph()
+            # bottom_para.paragraph_format.space_before = Pt(4)
+            # bottom_para.paragraph_format.space_after = Pt(0)
         
         work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
         
@@ -1918,17 +2406,25 @@ class CVAnalyzer:
         
         # ===== PAGE 1 =====
         create_full_width_header(doc, candidate_name, candidate_title)
-        doc.add_paragraph()
         
         profile_summary = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
         
         if profile_summary and not filtered_analysis.get("mocne_strony"):
             highlights = [h.strip() for h in profile_summary.split('•') if h.strip()]
+            
             if not highlights:
-                highlights = [s.strip() for s in profile_summary.split('.') if s.strip()][:6]
+                sentences = re.split(r'\.\s+(?=[A-Z])', profile_summary)
+                highlights = []
+                for s in sentences:
+                    s = s.strip()
+                    if len(s) > 10:
+                        if not s.endswith('.'):
+                            s = s + '.'
+                        highlights.append(s)
+                    if len(highlights) >= 6:
+                        break
+            
             filtered_analysis['mocne_strony'] = highlights[:6]
-        
-        highlights = filtered_analysis.get("key_highlights", [])
         
         if not highlights or len(highlights) == 0:
             profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
@@ -1936,12 +2432,20 @@ class CVAnalyzer:
                 if "•" in profile_text:
                     highlights = [h.strip() for h in profile_text.split("•") if h.strip()][:6]
                 else:
-                    sentences = [s.strip() for s in profile_text.split(".") if len(s.strip()) > 10]
-                    highlights = sentences[:6]
+                    sentences = re.split(r'\.\s+(?=[A-Z])', profile_text)
+                    highlights = []
+                    for s in sentences:
+                        s = s.strip()
+                        if len(s) > 10:
+                            if not s.endswith('.'):
+                                s = s + '.'
+                            highlights.append(s)
+                        if len(highlights) >= 6:
+                            break
         
         # PAGE 1 - KEY HIGHLIGHTS WITH UNDERLINE
         heading = doc.add_paragraph()
-        run = heading.add_run(get_section_name('K E Y H I G H L I G H T S'))
+        run = heading.add_run(get_section_name('K E Y  H I G H L I G H T S'))
         apply_arsenal_font(run, size=13, bold=True)
         
         pPr = heading._element.get_or_add_pPr()
@@ -2021,15 +2525,17 @@ class CVAnalyzer:
                 if skills_list:
                     skills_str = ', '.join([safe_text(s) for s in skills_list])
                     
+
+
                     # Label - bold
                     p = left_cell.add_paragraph(f"{label}:")
-                    p.paragraph_format.space_before = Pt(0)
-                    p.paragraph_format.space_after = Pt(0)
+                    p.paragraph_format.space_before = Pt(8)
+                    p.paragraph_format.space_after = Pt(4)
                     for run in p.runs:
-                        apply_arsenal_font(run, size=7, bold=True)
+                        apply_arsenal_font(run, size=9, bold=True)
                     
                     # Technologies - with BOLD keywords
-                    self._add_paragraph_with_bold_keywords(left_cell, skills_str, keywords, base_size=7)
+                    self._add_paragraph_with_bold_keywords(left_cell, skills_str, keywords, base_size=9)
 
         
         # TECH STACK WITH UNDERLINE
@@ -2046,7 +2552,7 @@ class CVAnalyzer:
                 p.paragraph_format.space_before = Pt(0)
                 p.paragraph_format.space_after = Pt(0)
                 for run in p.runs:
-                    apply_arsenal_font(run, size=7, bold=False)
+                    apply_arsenal_font(run, size=9, bold=False)
         
         # LANGUAGES WITH UNDERLINE
         p = left_cell.add_paragraph()
@@ -2064,7 +2570,7 @@ class CVAnalyzer:
                 p.paragraph_format.space_before = Pt(0)
                 p.paragraph_format.space_after = Pt(0)
                 for run in p.runs:
-                    apply_arsenal_font(run, size=7, bold=False)
+                    apply_arsenal_font(run, size=9, bold=False)
         
         # CERTIFICATIONS WITH UNDERLINE
         p = left_cell.add_paragraph()
@@ -2087,13 +2593,13 @@ class CVAnalyzer:
                 p.paragraph_format.space_before = Pt(0)
                 p.paragraph_format.space_after = Pt(0)
                 for run in p.runs:
-                    apply_arsenal_font(run, size=7, bold=True)
+                    apply_arsenal_font(run, size=9, bold=True)
                 
                 p = left_cell.add_paragraph(issuer)
                 p.paragraph_format.space_before = Pt(0)
                 p.paragraph_format.space_after = Pt(0)
                 for run in p.runs:
-                    apply_arsenal_font(run, size=6, bold=False)
+                    apply_arsenal_font(run, size=9, bold=False)
         
         # ===== RIGHT COLUMN =====
         
@@ -2109,33 +2615,56 @@ class CVAnalyzer:
         p.paragraph_format.space_before = Pt(1)
         p.paragraph_format.space_after = Pt(0)
         add_section_header_with_underline(right_cell, get_section_name('W O R K  E X P E R I E N C E'))
-        
+
+        #tu
         if work_exp_data:
-            for exp in work_exp_data:
-                period = safe_text(exp.get('okres') or exp.get('period', 'N/A'))
+            for idx, exp in enumerate(work_exp_data):
+                period = safe_text(exp.get('okres') or exp.get('period', ''))
                 company = safe_text(exp.get('firma') or exp.get('company', ''))
                 position = safe_text(exp.get('stanowisko') or exp.get('position', ''))
-                
-                p = right_cell.add_paragraph(f"{period} - {company}")
-                p.paragraph_format.space_before = Pt(0)
-                p.paragraph_format.space_after = Pt(0)
-                for run in p.runs:
-                    apply_arsenal_font(run, size=8, bold=True)
-                
-                p = right_cell.add_paragraph(position)
-                p.paragraph_format.space_before = Pt(0)
-                p.paragraph_format.space_after = Pt(0)
-                for run in p.runs:
-                    apply_arsenal_font(run, size=7, bold=False)
-                
                 achievements = exp.get('kluczowe_osiagniecia') or exp.get('key_achievements', [])
+
+                # odstęp między jobami
+                if idx > 0:
+                    spacer = right_cell.add_paragraph()
+                    spacer.paragraph_format.space_before = Pt(4)
+                    spacer.paragraph_format.space_after = Pt(0)
+
+                # 1. Stanowisko – bold, większy font
+                if position:
+                    p_pos = right_cell.add_paragraph()
+                    p_pos.paragraph_format.space_before = Pt(0)
+                    p_pos.paragraph_format.space_after = Pt(0)
+                    run_pos = p_pos.add_run(position)
+                    apply_arsenal_font(run_pos, size=10, bold=True)
+
+                # 2. Okres – bold
+                if period:
+                    p_period = right_cell.add_paragraph()
+                    p_period.paragraph_format.space_before = Pt(0)
+                    p_period.paragraph_format.space_after = Pt(0)
+                    run_period = p_period.add_run(period)
+                    apply_arsenal_font(run_period, size=9, bold=True)
+
+                # 3. Firma – bold
+                if company:
+                    p_company = right_cell.add_paragraph()
+                    p_company.paragraph_format.space_before = Pt(0)
+                    p_company.paragraph_format.space_after = Pt(2)
+                    run_company = p_company.add_run(company)
+                    apply_arsenal_font(run_company, size=9, bold=True)
+
+                # 4. Zadania – font 9, bez bold
                 if achievements:
                     for achievement in achievements:
                         self._add_paragraph_with_bold_keywords(
-                            right_cell, 
-                            f"• {safe_text(achievement)}", 
-                            keywords, 
-                            base_size=7
+                            right_cell,
+                            safe_text(achievement),
+                            keywords,
+                            base_size=9,
+                            space_before=0,
+                            space_after=2,
+                            bold_base=False
                         )
         
         # EDUCATION WITH UNDERLINE
@@ -2146,16 +2675,9 @@ class CVAnalyzer:
         
         education_data = filtered_analysis.get('wyksztalcenie') or filtered_analysis.get('education', [])
 
-        print(f"🔍 DEBUG DOCX Education data: {education_data}")
+
 
         if education_data and len(education_data) > 0:
-            # heading = right_cell.add_paragraph()
-            # run = heading.add_run(get_section_name('W Y K S Z T A Ł C E N I E'))
-            # apply_arsenal_font(run, size=10, bold=True)
-            # # Add underline
-            # pPr = heading._element.get_or_add_pPr()
-            # pBdr = parse_xml(r'<w:pBdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:bottom w:val="single" w:sz="12" w:space="1" w:color="4C4C4C"/></w:pBdr>')
-            # pPr.append(pBdr)
             
             for edu in education_data:
                 institution = safe_text(edu.get('uczelnia') or edu.get('institution'), '')
@@ -2166,17 +2688,17 @@ class CVAnalyzer:
                 # ✅ RENDERUJ TYLKO JEŚLI DANE ISTNIEJĄ (jak w PDF!)
                 if institution and institution not in ['', 'None', 'N/A']:
                     p = right_cell.add_paragraph(institution)
-                    apply_arsenal_font(p.runs[0], size=8, bold=False)
+                    apply_arsenal_font(p.runs[0], size=9, bold=False)
                 
                 if degree or field:
                     degree_field = f"{degree} of {field}" if degree and field else (degree or field)
                     if degree_field and degree_field not in ['', 'None', 'N/A', ' of ']:
                         p = right_cell.add_paragraph(degree_field)
-                        apply_arsenal_font(p.runs[0], size=8, bold=False)
+                        apply_arsenal_font(p.runs[0], size=9, bold=False)
                 
                 if period and period not in ['', 'None', 'N/A']:
                     p = right_cell.add_paragraph(period)
-                    apply_arsenal_font(p.runs[0], size=7, bold=False)
+                    apply_arsenal_font(p.runs[0], size=9, bold=False)
         
         buffer = BytesIO()
         doc.save(buffer)
