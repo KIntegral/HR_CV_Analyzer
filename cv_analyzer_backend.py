@@ -866,276 +866,294 @@ class CVAnalyzer:
         return categorized
 
 
-    def _extract_work_experience_details(self, cv_text):
+    def _extract_work_experience_details(self, cvtext: str) -> list:
         """
-        UNIWERSALNA ekstrakcja work experience - używa LLM do parsowania.
-        Działa z wieloma strukturami CV, z fallbackiem na cały dokument.
+        Universal work experience extraction - handles both separate jobs AND project lists.
         """
         import re
         import json
 
-        # 1. Spróbuj wydzielić sekcję doświadczenia różnymi nagłówkami
+        # 1. Wycięcie sekcji doświadczenia
         patterns = [
-                # angielskie
-                r'(?:Work History|WORK HISTORY)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-                r'(?:Work Experience|WORK EXPERIENCE)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-                r'(?:Professional Experience|PROFESSIONAL EXPERIENCE)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-                r'(?:Experience|EXPERIENCE)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-                r'(?:Employment History|EMPLOYMENT HISTORY)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-                r'(?:Career History|CAREER HISTORY)(.*?)(?:Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-
-                # polskie
-                r'(?:Doświadczenie zawodowe|DOŚWIADCZENIE ZAWODOWE)(.*?)(?:Wykształcenie|WYKSZTAŁCENIE|Edukacja|EDUKACJA|Umiejętności|UMIEJĘTNOŚCI|Projekty|PROJEKTY|$)',
-                r'(?:Historia zatrudnienia|HISTORIA ZATRUDNIENIA)(.*?)(?:Wykształcenie|WYKSZTAŁCENIE|Edukacja|EDUKACJA|Umiejętności|UMIEJĘTNOŚCI|Projekty|PROJEKTY|$)',
-            ]
-
-        section = None
-        for pattern in patterns:
-            match = re.search(pattern, cv_text, re.DOTALL | re.IGNORECASE)
-            if match:
-                section = match.group(1).strip()
-                print(f"✅ Found work section with pattern: {pattern[:40]}...")
-                break
-
-        # 2. Jeśli sekcja jest za krótka / nie znaleziona – użyj całego CV jako kontekstu
-        if not section or len(section) < 600:
-            print("⚠️ Work Experience section not cleanly found, using full CV for LLM extraction")
-            section = cv_text
-        else:
-            print(f"📄 Work section extracted ({len(section)} chars))")
-
-        # 3. Prompt do LLM – zostawiamy Twój, ale rozszerzamy o informację że tekst może być całym CV
-        prompt = f"""
-    You are an HR assistant specialized in parsing CVs.
-
-    Your task: EXTRACT ALL WORK EXPERIENCE ENTRIES from the text below.
-    The text may be:
-    - ONLY the work experience section, OR
-    - the FULL CV text.
-
-    VERY IMPORTANT:
-    - The CV DOES contain work experience entries. DO NOT return an empty array if you see any roles with company + position + dates.
-    - Even if the formatting is messy (no bullets, everything in one paragraph), you MUST still detect all jobs.
-
-    LINES THAT ALWAYS START A NEW JOB:
-    - Any standalone line that looks like a job title, for example:
-    "Fullstack Developer"
-    "Fullstack Developer / Feature leader"
-    "Software Developer"
-
-    EXAMPLE FROM SUCH A CV:
-
-    Fullstack Developer
-    Nomentia | KnowIT | Feb 2024 - current
-
-    Fullstack Developer / Feature leader
-    WPA | Maczfit | Nexio Management | Nov 2020 - Jan 2024
-
-    Software Developer
-    Airline Control Software | Nov 2018 - Oct 2020
-
-    From this text you MUST return THREE SEPARATE job objects:
-    1) position = "Fullstack Developer", company = "Nomentia | KnowIT", period = "Feb 2024 - current"
-    2) position = "Fullstack Developer / Feature leader", company = "WPA | Maczfit | Nexio Management", period = "Nov 2020 - Jan 2024"
-    3) position = "Software Developer", company = "Airline Control Software", period = "Nov 2018 - Oct 2020"
-
-    Never merge multiple roles into one object, even if the bullets or technologies are similar.
-
-    OUTPUT FORMAT:
-    Return ONLY a JSON array. Each element = ONE job object:
-
-    {{
-    "company": "Company Name",
-    "position": "Job Title",
-    "period": "MM/YYYY - MM/YYYY",
-    "description": ["bullet 1", "bullet 2", "bullet 3"],
-    "technologies": []
-    }}
-
-    REQUIREMENTS FOR EACH JOB:
-    - "company": company name as it appears in the CV (can be empty ONLY if it is really not in the text).
-    - "position": job title exactly as in the CV.
-    - "period": full date range EXACTLY as in the CV (e.g. "04/2023 - Current", "Nov 2018 - Oct 2020").
-    - "description": array of sentences or bullet-like fragments describing responsibilities and achievements.
-    - If there is any descriptive text under a job, DO NOT leave "description" empty.
-    - "technologies": ALWAYS an array (can be empty []).
-
-    CRITICAL INSTRUCTIONS:
-    1. Detect EVERY role that has at least: position + some descriptive text, even if company or dates are missing.
-    2. Treat each new job title line (like the examples above) as the START of a NEW job object.
-    3. Group ALL text that belongs to that role into ONE "description" array.
-    4. Do NOT create multiple objects for the same role just because there are many bullets.
-    5. Ignore education, languages, hobbies, courses, accomplishments etc. ONLY jobs/work experience.
-    6. NEVER return comments, explanations, or markdown. Return ONLY a valid JSON array.
-    7. If at least one job is present in the text, the JSON array MUST contain at least one object.
-
-    CV TEXT:
-    \"\"\"{section}\"\"\"
-    """
-
-
-        print("====== WORK SECTION SENT TO LLM ======")
-        print(section)
-        print("======================================")
-
-        try:
-            response = ollama.chat(
-                model=self.model_name,
-                messages=[{'role': 'user', 'content': prompt}],
-                options={'temperature': 0.1, 'num_predict': 3000}
-            )
-
-            response_text = response["message"]["content"].strip()
-            print("=== RAW WORKEXPERIENCE LLM RESPONSE START ===")
-            print(response_text[:1500])
-            print("=== RAW WORKEXPERIENCE LLM RESPONSE END ===")
-            # 1. Spróbuj najpierw czysty tekst jako JSON
-            try:
-                jobs = json.loads(response_text)
-            except Exception:
-                # 2. Jak się nie uda – wytnij pierwszy blok zaczynający się od '['
-                m = re.search(r"\[.*\]", response_text, re.DOTALL)
-                if not m:
-                    print("LLM did not return JSON array for work experience")
-                    print(f"LLM raw response (truncated): {response_text[:200]}...")
-                    return []
-                jsoncandidate = m.group(0)
-                jobs = json.loads(jsoncandidate)
-
-            # 6. Walidacja i czyszczenie
-            valid_jobs = []
-
-            for job in jobs:
-                company = (job.get("company") or "").strip()
-                position = (job.get("position") or "").strip()
-                period = (job.get("period") or "").strip()
-                desc = job.get("description")
-
-                if isinstance(desc, str):
-                    desc = [desc]
-                if not isinstance(desc, list):
-                    desc = []
-
-                # delikatne czyszczenie
-                desc = [str(d).strip() for d in desc if d and len(str(d).strip()) > 5]
-
-                # technologies zawsze lista
-                technologies = job.get("technologies") or []
-                if isinstance(technologies, str):
-                    technologies = [technologies]
-                if not isinstance(technologies, list):
-                    technologies = []
-
-                # AKCEPTUJEMY job nawet bez company/period, jeśli jest sensowna pozycja + opis
-                has_min_position = bool(position)
-                has_some_desc = bool(desc)
-
-                if has_min_position and has_some_desc:
-                    fixed_job = {
-                        "company": company,
-                        "position": position,
-                        "period": period,
-                        "description": desc,
-                        "technologies": technologies,
-                    }
-                    # spróbuj uzupełnić company/period z surowego tekstu (ważne dla OCR)
-                    fixed_job = try_fill_company_period_from_text(section, fixed_job)
-                    valid_jobs.append(fixed_job)
-
-            print(f"Extracted {len(valid_jobs)} work experience entries")
-            for job in valid_jobs:
-                print(f" - {job['company'] or '<no company>'} | {job['position']} | {job['period'] or '<no period>'} | {len(job['description'])} bullets")
-            return valid_jobs
-
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON parsing error: {e}")
-            print(f"Response was (truncated): {response_text[:200]}...")
-            return []
-        except Exception as e:
-            print(f"❌ LLM extraction error: {e}")
-            return []
-
-
-
-    def _extract_education_details(self, cv_text: str) -> list[dict]:
-        import re, json
-
-        # 1. Spróbuj wyciąć sekcję Education różnymi nagłówkami
-        patterns = [
-            r'(?:Education|EDUCATION)(.*?)(?:Skills|SKILLS|Experience|EXPERIENCE|Work History|WORK HISTORY|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-            r'(?:Academic Background|ACADEMIC BACKGROUND)(.*?)(?:Skills|SKILLS|Experience|EXPERIENCE|Work History|WORK HISTORY|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-            r'(?:Academic Qualifications|ACADEMIC QUALIFICATIONS)(.*?)(?:Skills|SKILLS|Experience|EXPERIENCE|Work History|WORK HISTORY|Projects|PROJECTS|Certifications|CERTIFICATIONS|$)',
-            r'(?:Wykształcenie|WYKSZTAŁCENIE|Edukacja|EDUKACJA)(.*?)(?:Umiejętności|UMIEJĘTNOŚCI|Doświadczenie zawodowe|DOŚWIADCZENIE ZAWODOWE|Projekty|PROJEKTY|$)',
+            r'(?is)\b(Work History|WORK HISTORY)\b.*?(?=(Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|\Z))',
+            r'(?is)\b(Work Experience|WORK EXPERIENCE)\b.*?(?=(Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|\Z))',
+            r'(?is)\b(Professional Experience|PROFESSIONAL EXPERIENCE)\b.*?(?=(Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|\Z))',
+            r'(?is)\b(Experience|EXPERIENCE)\b.*?(?=(Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|\Z))',
+            r'(?is)\b(Employment History|EMPLOYMENT HISTORY)\b.*?(?=(Education|EDUCATION|Academic Background|Skills|SKILLS|Projects|PROJECTS|Certifications|CERTIFICATIONS|\Z))',
+            r'(?is)\b(Doświadczenie zawodowe|DOŚWIADCZENIE ZAWODOWE)\b.*?(?=(Wykształcenie|WYKSZTAŁCENIE|Edukacja|EDUKACJA|Umiejętności|UMIEJĘTNOŚCI|Projekty|PROJEKTY|\Z))',
+            r'(?is)\b(Historia zatrudnienia|HISTORIA ZATRUDNIENIA)\b.*?(?=(Wykształcenie|WYKSZTAŁCENIE|Edukacja|EDUKACJA|Umiejętności|UMIEJĘTNOŚCI|Projekty|PROJEKTY|\Z))',
         ]
 
         section = None
-        for p in patterns:
-            m = re.search(p, cv_text, re.DOTALL | re.IGNORECASE)
-            if m:
-                section = m.group(1).strip()
-                print(f"🎓 Found education section ({len(section)} chars)")
+        for pattern in patterns:
+            match = re.search(pattern, cvtext, re.DOTALL | re.IGNORECASE)
+            if match and len(match.group(0).strip()) > 400:
+                section = match.group(0).strip()
+                print(f"💼 Found work section ({len(section)} chars)")
                 break
 
-        if not section or len(section) < 80:
-            print("⚠️ Education section not cleanly found, using full CV for LLM extraction")
-            section = cv_text
+        if not section or len(section) < 400:
+            print("⚠️ Work section not found, using full CV for extraction")
+            section = cvtext
+        else:
+            print(f"💼 Work section extracted: {len(section)} chars")
 
-        prompt = f"""
-    You are extracting a candidate's education history from a CV.
+        print("💼 WORK SECTION (last 1000 chars):")
+        print(section[-1000:])
+        print("=== END WORK SECTION ===")
 
-    Text:
-    \"\"\"{section}\"\"\"
+        # 2. Prompt - obsługa zarówno osobnych firm JAK I project lists
+        prompt = f"""Extract ALL WORK EXPERIENCE from this CV. 
 
-    Return a JSON array of education entries. Each entry must have:
-    - "institution" (string)
-    - "degree" (string)
-    - "field" (string)
-    - "start_date" (string, e.g. "2017-10" or "2017")
-    - "end_date" (string, e.g. "2019-06" or "2019" or "present")
+    IMPORTANT: Some CVs list ONE position with MULTIPLE PROJECTS/COMPANIES as bullets. Each project/company is a SEPARATE entry.
 
-    If a value is unknown, use an empty string.
-    If there is no education in the text, return exactly an empty JSON array: [] and nothing else.
-    Never return comments, explanations or markdown – only a JSON array.
+    Return ONLY a JSON array, no markdown.
+
+    Each entry:
+    - "company": company name (or "Project-based" if not specified)
+    - "position": job title
+    - "period": dates (e.g. "2024-Present", "2016-2020", "From 2016")
+    - "description": array of responsibilities/achievements (can be empty)
+    - "technologies": array of technologies mentioned (can be empty)
+
+    EXAMPLES FOR PROJECT-BASED EXPERIENCE (like Karol Baran):
+    [
+    {{"company": "Insurance Company", "position": "Senior Android Developer", "period": "2025-Present", "description": ["Android application in Kotlin/Jetpack Compose for managing insurance"], "technologies": ["Kotlin", "Jetpack Compose"]}},
+    {{"company": "International Bank", "position": "Senior Android Developer", "period": "2024-2025", "description": ["Application for leasings, loans, investments"], "technologies": ["Kotlin"]}},
+    {{"company": "International Bank", "position": "Senior Android Developer", "period": "2023-2024", "description": ["Jetpack Compose + BDD methodology"], "technologies": ["Kotlin", "Jetpack Compose", "BDD"]}},
+    {{"company": "Digital Bank", "position": "Senior Android Developer", "period": "2020-2023", "description": ["USA market, children management"], "technologies": ["Kotlin"]}},
+    {{"company": "Navigation", "position": "Android Developer", "period": "2018-2020", "description": ["Maps and navigation, 10M users"], "technologies": ["Java", "Kotlin"]}},
+    {{"company": "Fleet management", "position": "Android Developer", "period": "2017-2018", "description": ["Fleet management system"], "technologies": ["Kotlin"]}},
+    {{"company": "BLE Connection", "position": "Android Developer", "period": "2016-2017", "description": ["Smart device integration"], "technologies": ["Java", "Kotlin"]}},
+    {{"company": "Calendar Reservation", "position": "Android Developer", "period": "2016", "description": ["Booking-like app"], "technologies": ["Java"]}}
+    ]
+
+    CRITICAL RULES:
+    1. Each bullet/project under ONE position = ONE separate JSON entry
+    2. If period is vague (e.g. "2016-Present" for 10 projects), estimate/split periods logically
+    3. Extract company names from project descriptions (e.g. "Insurance Company", "Digital Bank")
+    4. If no company name, use project name (e.g. "Navigation", "Fleet management")
+    5. Keep position consistent across projects (e.g. "Senior Android Developer")
+    6. Extract ALL projects - do NOT merge them
+
+    CV TEXT:
+    {section[:6000]}
     """
 
-        response = ollama.chat(
-            model=self.model_name,
-            messages=[{'role': 'user', 'content': prompt}],
-            options={'temperature': 0.1, 'num_predict': 3000}
-        )
-
-        text = response["message"]["content"].strip()
-        text = text.replace("``````", "").strip()
-
-        m = re.search(r'\[\s*\{.*\}\s*\]|\[\s*\]', text, re.DOTALL)
-        if not m:
-            print("⚠️ LLM did not return JSON for education")
-            print(f"Education raw response (truncated): {text[:200]}...")
+        # 3. LLM call - większy limit dla project lists
+        model = getattr(self, "model_name", getattr(self, "modelname", "qwen2.5:14b"))
+        try:
+            resp = ollama.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.1, "num_predict": 3500},  # ← 3500 dla 10+ projektów
+            )
+            responsetext = resp["message"]["content"].strip()
+            print(f"📝 RAW WORKEXP LLM ({len(responsetext)} chars):")
+            print(responsetext[:800])
+        except Exception as e:
+            print(f"❌ LLM error: {e}")
             return []
+
+        # 4. Clean JSON
+        responsetext = responsetext.replace("``````", "").strip()
+        l = responsetext.find("[")
+        r = responsetext.rfind("]") + 1
+
+        if l == -1 or r == 0 or r <= l:
+            print("❌ No JSON array in response")
+            return []
+
+        json_text = responsetext[l:r]
+        print(f"🔍 JSON array ({len(json_text)} chars):")
+        print(json_text[:600])
 
         try:
-            education = json.loads(m.group(0))
-            normalized = []
-            for e in education:
-                normalized.append({
-                    "institution": e.get("institution", ""),
-                    "degree": e.get("degree", ""),
-                    "field": e.get("field", ""),
-                    "period": e.get("period") or f"{e.get('start_date','')} – {e.get('end_date','')}".strip(" –"),
-                })
-            education = normalized
-            print(f"✅ Extracted {len(education)} education entries (normalized)")
-            return education
+            items = json.loads(json_text)
+            if not isinstance(items, list):
+                return []
         except Exception as e:
-            print(f"❌ JSON parsing error for education: {e}")
-            print(f"Education raw response (truncated): {text[:200]}...")
+            print(f"❌ JSON parse error: {e}")
             return []
 
+        # 5. Normalizacja
+        validjobs = []
+        for job in items:
+            company = (job.get("company") or job.get("employer") or "").strip()
+            position = (job.get("position") or job.get("title") or job.get("role") or "").strip()
+            period = (job.get("period") or f"{job.get('start','')}-{job.get('end','')}".strip("- ") or "").strip()
+            
+            desc = job.get("description", [])
+            if isinstance(desc, str):
+                desc = [desc] if desc.strip() else []
+            elif not isinstance(desc, list):
+                desc = []
+
+            tech = job.get("technologies", [])
+            if isinstance(tech, str):
+                tech = [t.strip() for t in tech.split(",") if t.strip()]
+            elif not isinstance(tech, list):
+                tech = []
+
+            # Akceptuj jeśli ma position LUB company (minimum)
+            if position or company:
+                validjobs.append({
+                    "company": company,
+                    "position": position,
+                    "period": period,
+                    "description": desc,
+                    "technologies": tech,
+                })
+
+        print(f"✅ Extracted {len(validjobs)} work experience entries:")
+        for i, j in enumerate(validjobs, 1):
+            print(f"  {i}. {j['position']} @ {j['company']} ({j['period']}) - {len(j['description'])} bullets")
+
+        return validjobs
 
 
 
 
- 
+    def _extract_education_details(self, cvtext: str) -> list:
+        """
+        Universal education extraction - handles multi-page sections + internships.
+        """
+        import re
+        import json
+
+        # 1. Wycinanie WSZYSTKICH fragmentów "Edukacja" (także continued)
+        header_pattern = r'(?is)\b(Education|Edukacja|Wykształcenie|Studia|Academic|Qualifications)(\s*\(continued\))?\b'
+        
+        stop_patterns = [
+            r'(?is)\b(Skills|Umiejętności|Languages|Języki|Kursy|Szkolenia|Certifications|References|Consent|Nagrody|Publikacje|I hereby)\b',
+        ]
+
+        all_matches = []
+        for m in re.finditer(header_pattern, cvtext):
+            start_pos = m.start()
+            remaining = cvtext[start_pos:]
+            
+            stop_pos = len(remaining)
+            for stop_pat in stop_patterns:
+                m_stop = re.search(stop_pat, remaining[150:])
+                if m_stop:
+                    stop_pos = min(stop_pos, 150 + m_stop.start())
+                    break
+            
+            fragment = remaining[:stop_pos].strip()
+            if len(fragment) > 100:
+                all_matches.append(fragment)
+                print(f"🎓 Fragment #{len(all_matches)}: {len(fragment)} chars")
+
+        if all_matches:
+            section = "\n\n=== CONTINUED ===\n\n".join(all_matches)
+            print(f"🎓 Total education: {len(section)} chars from {len(all_matches)} sections")
+        else:
+            print("⚠️ No education, using full CV")
+            section = cvtext
+
+        print("🎓 LAST 1200 CHARS OF SECTION:")
+        print(section[-1200:])
+        print("=== END ===")
+
+        # 2. Prompt - WYMUSZENIE osobnych wpisów
+        prompt = f"""Extract ALL education entries from this CV. Each degree, internship, or academic stay is a SEPARATE entry.
+
+    Return ONLY a JSON array, no markdown.
+
+    Each entry:
+    - "institution": university name
+    - "degree": Doktorat/PhD/Master/Bachelor/Staż doktorancki/Inżynier/Magister Inżynier
+    - "field": field of study (can be empty for internships)
+    - "period": dates (e.g. "2018-2022", "2022", "2017-2018")
+
+    CRITICAL RULES:
+    1. "Staż doktorancki" (doctoral internship) is a SEPARATE entry - do NOT merge with PhD
+    2. "Magister Inżynier" and "Inżynier" at the SAME university are TWO entries (even if same dates)
+    3. Each line starting with a degree title or institution is a NEW entry
+    4. Do NOT merge entries with same university or dates
+
+    EXAMPLES (from this CV):
+    [
+    {{"institution": "Politechnika Śląska", "degree": "Doktorat", "field": "Mechanika Obliczeniowa", "period": "2018-2022"}},
+    {{"institution": "Montanuniversität Leoben", "degree": "Staż doktorancki", "field": "energia odnawialna", "period": "2022"}},
+    {{"institution": "Cranfield University", "degree": "Staż doktorancki", "field": "przepływy supersoniczne", "period": "2022"}},
+    {{"institution": "Cranfield University", "degree": "Master of Science", "field": "Computational Fluid Dynamics", "period": "2017-2018"}},
+    {{"institution": "Politechnika Śląska", "degree": "Magister Inżynier", "field": "Mechanika i Budowa Maszyn", "period": "2013-2017"}},
+    {{"institution": "Politechnika Śląska", "degree": "Inżynier", "field": "Mechanika i Budowa Maszyn", "period": "2013-2017"}}
+    ]
+
+    CV TEXT:
+    {section[:5500]}
+    """
+
+        # 3. LLM - większy limit dla 6 wpisów
+        model = getattr(self, "model_name", getattr(self, "modelname", "qwen2.5:14b"))
+        try:
+            resp = ollama.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.0, "num_predict": 2000},  # ← 2000 dla 6 wpisów
+            )
+            raw = resp["message"]["content"].strip()
+            print(f"📝 RAW LLM ({len(raw)} chars):")
+            print(raw[:600])
+        except Exception as e:
+            print(f"❌ LLM error: {e}")
+            return []
+
+        # 4. Clean JSON
+        raw = raw.replace("``````", "").strip()
+        l = raw.find("[")
+        r = raw.rfind("]") + 1
+        
+        if l == -1 or r == 0 or r <= l:
+            print("❌ No JSON array")
+            return []
+
+        json_text = raw[l:r]
+        print(f"🔍 JSON array ({len(json_text)} chars):")
+        print(json_text[:500])
+
+        try:
+            data = json.loads(json_text)
+            if not isinstance(data, list):
+                return []
+        except Exception as e:
+            print(f"❌ JSON parse error: {e}")
+            print(f"Failed JSON: {json_text[:400]}")
+            return []
+
+        # 5. Normalizacja
+        normalized = []
+        for e in data:
+            period = (
+                e.get("period")
+                or f"{e.get('start','')}-{e.get('end','')}".strip("- ")
+                or e.get("dates", "")
+            )
+
+            institution = (e.get("institution") or e.get("university") or e.get("school") or "").strip()
+            degree = (e.get("degree") or e.get("title") or e.get("level") or "").strip()
+            field = (e.get("field") or e.get("major") or e.get("specialization") or "").strip()
+            period = " ".join(period.split())
+
+            if degree or institution:
+                normalized.append({
+                    "institution": institution,
+                    "degree": degree,
+                    "field": field,
+                    "period": period,
+                })
+
+        print(f"✅ Extracted {len(normalized)} education entries:")
+        for i, e in enumerate(normalized, 1):
+            print(f"  {i}. {e['degree']} {e['field']} @ {e['institution']} ({e['period']})")
+
+        return normalized
+
+
+
 
     def _create_polish_prompt(self, cv_text, client_requirements, needs_translation=False, source_lang='polish'):
         """
@@ -1688,7 +1706,7 @@ class CVAnalyzer:
         if language is None:
             language = filtered_analysis.get('output_language', 'en')
         # Font paths
-        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#"/app/arsenal/Arsenal-Regular.ttf"
+        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#
         arsenal_bold = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf'#"/app/arsenal/Arsenal-Bold.ttf"
         keywords = self._extract_keywords_from_requirements(client_requirements)
         print(f"🔍 Extracted {len(keywords)} keywords for highlighting: {keywords[:10]}")
