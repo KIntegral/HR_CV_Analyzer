@@ -364,10 +364,13 @@ class CVAnalyzer:
         # STEP 3: Extract technologies
         extracted_tech = self._extract_technologies_from_cv(cv_text)
         categorized_tech = self._categorize_technologies(extracted_tech)
+        languages_data = self.extract_languages(cv_text)
+        certifications_data = self.extract_certifications(cv_text)
+
         
         # STEP 4: Extract basic info using Ollama (name, email, phone only)
         basic_info_prompt = f"""Extract ONLY basic contact information from this CV:
-
+        
     CV TEXT:
     {cv_text}
 
@@ -469,8 +472,17 @@ class CVAnalyzer:
                     }
                     for edu in education
                 ],
-                "certyfikaty_i_kursy": [],
-                "jezyki_obce": [{"jezyk": "English", "poziom": "C1"}],
+                "certyfikaty_i_kursy": [
+                        {
+                            "nazwa": cert["name"], 
+                            "typ": cert["type"], 
+                            "wystawca": cert["issuer"], 
+                            "data": cert["date"],
+                            "szczegóły": cert.get("details", "")
+                        } 
+                        for cert in certifications_data
+                    ],
+                "jezyki_obce": [{"język": lang["language"], "poziom": lang["level"]} for lang in languages_data],
                 "umiejetnosci": {
                     "programowanie_skrypty": categorized_tech.get('programming_scripting', []),
                     "frameworki_biblioteki": categorized_tech.get('frameworks_libraries', []),
@@ -525,8 +537,17 @@ class CVAnalyzer:
                     }
                     for edu in education
                 ],
-                "certifications_and_courses": [],
-                "languages": [{"language": "English", "level": "C1"}],
+                "certifications_and_courses": [
+                    {
+                        "name": cert["name"], 
+                        "type": cert["type"], 
+                        "issuer": cert["issuer"], 
+                        "date": cert["date"],
+                        "details": cert.get("details", "")
+                    } 
+                    for cert in certifications_data
+                ],
+                "languages": [{"language": lang["language"], "level": lang["level"]} for lang in languages_data],
                 "skills": {
                     "programming_scripting": categorized_tech.get('programming_scripting', []),
                     "frameworks_libraries": categorized_tech.get('frameworks_libraries', []),
@@ -548,7 +569,20 @@ class CVAnalyzer:
                     "recommendation": "YES"
                 }
             })
-        
+        if analysis.get("jezyki_obce"):
+            # alias na wersję angielską
+            analysis["languages"] = [
+                {"language": item.get("język", ""), "level": item.get("poziom", "")}
+                for item in analysis["jezyki_obce"]
+            ]
+        elif analysis.get("languages"):
+            # alias na wersję polską
+            analysis["jezyki_obce"] = [
+                {"język": item.get("language", ""), "poziom": item.get("level", "")}
+                for item in analysis["languages"]
+            ]
+
+        print(f"🗣️ Languages in analysis: {analysis.get('languages')}")
         print(f"✅ Analysis complete: {len(work_experience)} jobs, {len(education)} education entries")
         return analysis
 
@@ -741,7 +775,7 @@ class CVAnalyzer:
             # Clean up
             tech_list = [t for t in tech_list if len(t) > 1 and len(t) < 50]
             
-            print(f"🔍 Extracted {len(tech_list)} technologies: {tech_list[:10]}...")
+            #print(f"🔍 Extracted {len(tech_list)} technologies: {tech_list[:10]}...")
             
             return tech_list
             
@@ -858,10 +892,10 @@ class CVAnalyzer:
             categorized["frameworks_libraries"].extend(categorized["mobile"])
             categorized["mobile"] = []
         
-        print(f"📊 Categorized: programming={len(categorized['programming_scripting'])}, "
-            f"frameworks={len(categorized['frameworks_libraries'])}, "
-            f"infra={len(categorized['infrastructure_devops'])}, "
-            f"db={len(categorized['databases_messaging'])}")
+        # print(f"📊 Categorized: programming={len(categorized['programming_scripting'])}, "
+        #     f"frameworks={len(categorized['frameworks_libraries'])}, "
+        #     f"infra={len(categorized['infrastructure_devops'])}, "
+        #     f"db={len(categorized['databases_messaging'])}")
         
         return categorized
 
@@ -898,47 +932,74 @@ class CVAnalyzer:
         else:
             print(f"💼 Work section extracted: {len(section)} chars")
 
-        print("💼 WORK SECTION (last 1000 chars):")
-        print(section[-1000:])
-        print("=== END WORK SECTION ===")
+        # print("💼 WORK SECTION (last 1000 chars):")
+        # print(section[-1000:])
+        # print("=== END WORK SECTION ===")
 
         # 2. Prompt - obsługa zarówno osobnych firm JAK I project lists
-        prompt = f"""Extract ALL WORK EXPERIENCE from this CV. 
+        # W funkcji extract_work_experience_details, w promptcie dodaj:
 
-    IMPORTANT: Some CVs list ONE position with MULTIPLE PROJECTS/COMPANIES as bullets. Each project/company is a SEPARATE entry.
+        prompt = f"""Extract ALL WORK EXPERIENCE from this CV. Each company is a SEPARATE entry with ALL bullet points preserved.
 
-    Return ONLY a JSON array, no markdown.
+        Return ONLY a JSON array, no markdown, no comments.
 
-    Each entry:
-    - "company": company name (or "Project-based" if not specified)
-    - "position": job title
-    - "period": dates (e.g. "2024-Present", "2016-2020", "From 2016")
-    - "description": array of responsibilities/achievements (can be empty)
-    - "technologies": array of technologies mentioned (can be empty)
+        Each entry:
+        - "company": company name (exact as in CV)
+        - "position": job title
+        - "period": dates
+        - "description": array of ALL bullet points (NEVER merge or skip bullets)
+        - "technologies": array of technologies
 
-    EXAMPLES FOR PROJECT-BASED EXPERIENCE (like Karol Baran):
-    [
-    {{"company": "Insurance Company", "position": "Senior Android Developer", "period": "2025-Present", "description": ["Android application in Kotlin/Jetpack Compose for managing insurance"], "technologies": ["Kotlin", "Jetpack Compose"]}},
-    {{"company": "International Bank", "position": "Senior Android Developer", "period": "2024-2025", "description": ["Application for leasings, loans, investments"], "technologies": ["Kotlin"]}},
-    {{"company": "International Bank", "position": "Senior Android Developer", "period": "2023-2024", "description": ["Jetpack Compose + BDD methodology"], "technologies": ["Kotlin", "Jetpack Compose", "BDD"]}},
-    {{"company": "Digital Bank", "position": "Senior Android Developer", "period": "2020-2023", "description": ["USA market, children management"], "technologies": ["Kotlin"]}},
-    {{"company": "Navigation", "position": "Android Developer", "period": "2018-2020", "description": ["Maps and navigation, 10M users"], "technologies": ["Java", "Kotlin"]}},
-    {{"company": "Fleet management", "position": "Android Developer", "period": "2017-2018", "description": ["Fleet management system"], "technologies": ["Kotlin"]}},
-    {{"company": "BLE Connection", "position": "Android Developer", "period": "2016-2017", "description": ["Smart device integration"], "technologies": ["Java", "Kotlin"]}},
-    {{"company": "Calendar Reservation", "position": "Android Developer", "period": "2016", "description": ["Booking-like app"], "technologies": ["Java"]}}
-    ]
+        EXAMPLE FORMAT (Edgar Dobosz):
+        [
+        {{
+            "company": "Nomentia KnowIT",
+            "position": "Fullstack Developer",
+            "period": "Feb 2024 - current",
+            "description": [
+            "Implementing customer-customized financial web platform according to business requirements",
+            "Mostly used technologies: .NET 6, React, SQL Server with Dapper, Docker"
+            ],
+            "technologies": [".NET 6", "React", "SQL Server", "Dapper", "Docker"]
+        }},
+        {{
+            "company": "WPA Maczfit Nexio Management",
+            "position": "Fullstack Developer Feature leader",
+            "period": "Nov 2020 - Jan 2024",
+            "description": [
+            "E-commerce and back office CRM web platforms implementation",
+            "UI design and implementation (React / Redux)",
+            "Creating unit and integration tests (nUnit)",
+            "Integration with external suppliers (Azure Function with REST Api and ServiceBus)",
+            "Production and test environments deployment using Azure DevOps",
+            "Development team work coordination",
+            "Technical and business support analysis",
+            "Post implementation review"
+            ],
+            "technologies": [".NET Core 3", ".NET 6", "REST Api", "Azure Functions", "React", "Redux", "nUnit", "Azure DevOps"]
+        }},
+        {{
+            "company": "Airline Control Software",
+            "position": "Software Developer",
+            "period": "Nov 2018 - Oct 2020",
+            "description": [
+            "Implementing CRM platform for aviation crew members. Main tech stack: ASP.NET, Javascript (jQuery)"
+            ],
+            "technologies": ["ASP.NET", "Javascript", "jQuery"]
+        }}
+        ]
 
-    CRITICAL RULES:
-    1. Each bullet/project under ONE position = ONE separate JSON entry
-    2. If period is vague (e.g. "2016-Present" for 10 projects), estimate/split periods logically
-    3. Extract company names from project descriptions (e.g. "Insurance Company", "Digital Bank")
-    4. If no company name, use project name (e.g. "Navigation", "Fleet management")
-    5. Keep position consistent across projects (e.g. "Senior Android Developer")
-    6. Extract ALL projects - do NOT merge them
+        CRITICAL RULES:
+        1. EACH company = ONE entry (NEVER merge companies)
+        2. EACH bullet point = ONE element in description array (count: Edgar has 11 bullets total)
+        3. Extract company names EXACTLY as written (e.g. "Nomentia KnowIT", "WPA Maczfit Nexio Management")
+        4. Keep ALL bullets - do NOT summarize or merge them
+        5. If you see 8 bullets under one job, your JSON must have 8 elements in "description" array
 
-    CV TEXT:
-    {section[:6000]}
-    """
+        CV TEXT:
+        {section[:6000]}
+        """
+
 
         # 3. LLM call - większy limit dla project lists
         model = getattr(self, "model_name", getattr(self, "modelname", "qwen2.5:14b"))
@@ -949,8 +1010,8 @@ class CVAnalyzer:
                 options={"temperature": 0.1, "num_predict": 3500},  # ← 3500 dla 10+ projektów
             )
             responsetext = resp["message"]["content"].strip()
-            print(f"📝 RAW WORKEXP LLM ({len(responsetext)} chars):")
-            print(responsetext[:800])
+            # print(f"📝 RAW WORKEXP LLM ({len(responsetext)} chars):")
+            # print(responsetext[:800])
         except Exception as e:
             print(f"❌ LLM error: {e}")
             return []
@@ -1006,8 +1067,8 @@ class CVAnalyzer:
                 })
 
         print(f"✅ Extracted {len(validjobs)} work experience entries:")
-        for i, j in enumerate(validjobs, 1):
-            print(f"  {i}. {j['position']} @ {j['company']} ({j['period']}) - {len(j['description'])} bullets")
+        # for i, j in enumerate(validjobs, 1):
+        #     print(f"  {i}. {j['position']} @ {j['company']} ({j['period']}) - {len(j['description'])} bullets")
 
         return validjobs
 
@@ -1052,9 +1113,9 @@ class CVAnalyzer:
             print("⚠️ No education, using full CV")
             section = cvtext
 
-        print("🎓 LAST 1200 CHARS OF SECTION:")
-        print(section[-1200:])
-        print("=== END ===")
+        # print("🎓 LAST 1200 CHARS OF SECTION:")
+        # print(section[-1200:])
+        # print("=== END ===")
 
         # 2. Prompt - WYMUSZENIE osobnych wpisów
         prompt = f"""Extract ALL education entries from this CV. Each degree, internship, or academic stay is a SEPARATE entry.
@@ -1096,8 +1157,8 @@ class CVAnalyzer:
                 options={"temperature": 0.0, "num_predict": 2000},  # ← 2000 dla 6 wpisów
             )
             raw = resp["message"]["content"].strip()
-            print(f"📝 RAW LLM ({len(raw)} chars):")
-            print(raw[:600])
+            # print(f"📝 RAW LLM ({len(raw)} chars):")
+            # print(raw[:600])
         except Exception as e:
             print(f"❌ LLM error: {e}")
             return []
@@ -1147,8 +1208,8 @@ class CVAnalyzer:
                 })
 
         print(f"✅ Extracted {len(normalized)} education entries:")
-        for i, e in enumerate(normalized, 1):
-            print(f"  {i}. {e['degree']} {e['field']} @ {e['institution']} ({e['period']})")
+        # for i, e in enumerate(normalized, 1):
+        #     print(f"  {i}. {e['degree']} {e['field']} @ {e['institution']} ({e['period']})")
 
         return normalized
 
@@ -1561,6 +1622,134 @@ class CVAnalyzer:
         return names.get(lang_code, {}).get(output_lang, lang_code)
     
 
+    def extract_certifications(self, cvtext: str) -> list:
+        """
+        Extract ALL certifications, courses, accomplishments, and awards from CV.
+        Handles multiple section names and formats.
+        """
+        import json
+        import re
+        
+        # 1. Wzorce dla różnych nazw sekcji
+        patterns = [
+            r'(?is)\b(Certifications?|CERTIFICATIONS?|Certificates?|CERTIFICATES?)\b.*?(?=(Education|EDUCATION|Languages|LANGUAGES|Skills|SKILLS|Projects|PROJECTS|Accomplishments|ACCOMPLISHMENTS|\Z))',
+            r'(?is)\b(Courses?|COURSES?|Training|TRAINING|Kursy|KURSY)\b.*?(?=(Education|EDUCATION|Languages|LANGUAGES|Skills|SKILLS|Projects|PROJECTS|Nagrody|NAGRODY|\Z))',
+            r'(?is)\b(Accomplishments?|ACCOMPLISHMENTS?|Achievements?|ACHIEVEMENTS?)\b.*?(?=(Education|EDUCATION|Languages|LANGUAGES|Skills|SKILLS|\Z))',
+            r'(?is)\b(Awards?|AWARDS?|Nagrody|NAGRODY|Wyróżnienia|WYRÓŻNIENIA)\b.*?(?=(Education|EDUCATION|Languages|LANGUAGES|Skills|SKILLS|Publikacje|PUBLIKACJE|\Z))',
+            r'(?is)\b(Additional Information|ADDITIONAL INFORMATION|Dodatkowe informacje|DODATKOWE INFORMACJE)\b.*?(?=(Education|EDUCATION|Languages|LANGUAGES|Skills|SKILLS|\Z))',
+            r'(?is)\b(Kursy i Szkolenia|KURSY I SZKOLENIA)\b.*?(?=(Umiejętności|UMIEJĘTNOŚCI|Nagrody|NAGRODY|\Z))',
+        ]
+        
+        sections = []
+        for pattern in patterns:
+            match = re.search(pattern, cvtext, re.DOTALL | re.IGNORECASE)
+            if match:
+                section = match.group(0).strip()
+                if len(section) > 30:  # Minimum 30 znaków
+                    sections.append(section)
+                    print(f"📜 Found cert/course section: {match.group(1)} ({len(section)} chars)")
+        
+        # 2. Jeśli nie znaleziono sekcji, użyj ostatnich 4000 znaków
+        if not sections:
+            print("⚠️ Cert sections not found, using last 4000 chars")
+            combined = cvtext[-4000:]
+        else:
+            combined = "\n\n".join(sections)
+        
+        print(f"📜 CERTIFICATIONS SECTION sent to LLM (first 500 chars):")
+        print(combined[:500])
+        print("=== END CERTIFICATIONS SECTION ===")
+        
+        prompt = f"""Extract ALL certifications, courses, training, awards, accomplishments, and achievements from this text.
+
+    Return ONLY a valid JSON array, no markdown, no comments.
+
+    Each entry:
+    - "name": certification/course/award name (e.g. "SAS Certified Specialist", "Complete Python Developer", "TOEIC B2")
+    - "type": "certification" OR "course" OR "award" OR "accomplishment"
+    - "issuer": organization/platform (e.g. "SAS", "Udemy", "TOEIC", "University") - if not specified, use ""
+    - "date": year or date (e.g. "2024", "2023-11", "19.02.2013") - if not specified, use ""
+    - "details": additional info like duration, achievement description (optional)
+
+    EXAMPLES:
+    [
+    {{"name": "SAS Certified Specialist: Base Programming Using SAS 9.4", "type": "certification", "issuer": "SAS", "date": "2024-08", "details": ""}},
+    {{"name": "Complete Python Developer in 2023: Zero to Mastery", "type": "course", "issuer": "Udemy", "date": "2023-11", "details": "31h"}},
+    {{"name": "English Certificate TOEIC - B2", "type": "certification", "issuer": "TOEIC", "date": "", "details": ""}},
+    {{"name": "Trzecia najlepsza praca doktorska w dziedzinie metod obliczeniowych w Polsce", "type": "award", "issuer": "European Community on Computational Methods in Applied Sciences", "date": "2022", "details": ""}},
+    {{"name": "Created fully functional ticket selling system for BEST organization", "type": "accomplishment", "issuer": "University", "date": "", "details": "Used in production for Prom party"}}
+    ]
+
+    CRITICAL RULES:
+    1. Extract EVERYTHING from the text - certifications, courses, awards, accomplishments
+    2. If issuer not clear, extract from context (e.g. "Udemy:", "SAS Certified" → issuer="Udemy"/"SAS")
+    3. Keep name concise but descriptive
+    4. Use "type" to categorize: certification/course/award/accomplishment
+
+    If no certifications/courses/awards found, return [].
+
+    TEXT:
+    {combined[:3000]}
+    """
+
+        model = getattr(self, "model_name", getattr(self, "modelname", "qwen2.5:14b"))
+        
+        try:
+            resp = ollama.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.0, "num_predict": 1500},
+            )
+            raw = resp["message"]["content"].strip()
+            print(f"📝 CERTIFICATIONS RAW LLM ({len(raw)} chars):")
+            print(raw[:400])
+            
+            # Clean JSON
+            raw = raw.replace("``````", "").strip()
+            l = raw.find("[")
+            r = raw.rfind("]") + 1
+            
+            if l == -1 or r == 0 or r <= l:
+                print("❌ No JSON array for certifications")
+                return []
+            
+            json_text = raw[l:r]
+            print(f"🔍 Certifications JSON (first 300 chars): {json_text[:300]}")
+            data = json.loads(json_text)
+            
+            if not isinstance(data, list):
+                return []
+            
+            # Normalizacja
+            normalized = []
+            for cert in data:
+                name = (cert.get("name") or cert.get("nazwa") or "").strip()
+                cert_type = (cert.get("type") or cert.get("typ") or "certification").strip().lower()
+                issuer = (cert.get("issuer") or cert.get("wystawca") or "").strip()
+                date = (cert.get("date") or cert.get("data") or "").strip()
+                details = (cert.get("details") or cert.get("szczegóły") or "").strip()
+                
+                if name:  # Minimum: nazwa certyfikatu/kursu
+                    normalized.append({
+                        "name": name,
+                        "type": cert_type,
+                        "issuer": issuer if issuer else "Not specified",
+                        "date": date if date else "Not specified",
+                        "details": details
+                    })
+            
+            print(f"✅ Extracted {len(normalized)} certifications/courses/awards:")
+            for c in normalized[:5]:  # Pokaż pierwsze 5
+                print(f"  - {c['type'].upper()}: {c['name']} ({c['issuer']}, {c['date']})")
+            
+            return normalized
+            
+        except Exception as e:
+            print(f"❌ Certifications extraction error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
 
     def _extract_keywords_from_requirements(self, client_requirements):
         """Extract ONLY key technologies and experience years from client requirements"""
@@ -1683,6 +1872,108 @@ class CVAnalyzer:
             pdf.set_font(font_name, style, 9)
             pdf.write(font_size * 0.7, word + (' ' if i < len(words)-1 else ''))
 
+    def extract_languages(self, cvtext: str) -> list:
+        """Extract ALL languages with levels from CV using LLM."""
+        import json
+        import re
+        
+        # 1. Spróbuj znaleźć sekcję Languages/Języki
+        patterns = [
+            r'(?is)\b(Languages|LANGUAGES|Języki|JĘZYKI)\b.*?(?=(Skills|SKILLS|Umiejętności|UMIEJĘTNOŚCI|Education|EDUCATION|Wykształcenie|WYKSZTAŁCENIE|Accomplishments|ACCOMPLISHMENTS|\Z))',
+            r'(?is)\b(Language|LANGUAGE|Język|JĘZYK)\b.*?(?=(Skills|SKILLS|Umiejętności|UMIEJĘTNOŚCI|Education|EDUCATION|Wykształcenie|WYKSZTAŁCENIE|\Z))',
+        ]
+        
+        section = None
+        for pattern in patterns:
+            match = re.search(pattern, cvtext, re.DOTALL | re.IGNORECASE)
+            if match:
+                section = match.group(0).strip()
+                print(f"🗣️ Found languages section ({len(section)} chars)")
+                break
+        
+        # 2. Jeśli nie znaleziono sekcji, użyj ostatnich 3000 znaków (Languages są zwykle na końcu)
+        if not section or len(section) < 50:
+            print("⚠️ Languages section not found, using last 3000 chars of CV")
+            section = cvtext[-3000:]
+        
+        print(f"🗣️ LANGUAGES SECTION sent to LLM (first 500 chars):")
+        print(section[:500])
+        print("=== END LANGUAGES SECTION ===")
+        
+        prompt = f"""Extract ALL LANGUAGES mentioned in this text with their proficiency levels.
+
+    Return ONLY a valid JSON array, no markdown, no comments.
+
+    Each entry:
+    - "language": language name (e.g. "English", "Polish", "Spanish", "German")
+    - "level": proficiency level (e.g. "C1", "B2", "A2", "Native", "First Language", "Advanced", "Intermediate")
+
+    EXAMPLES:
+    [
+    {{"language": "Polish", "level": "First Language"}},
+    {{"language": "English", "level": "C1"}},
+    {{"language": "Spanish", "level": "B2"}},
+    {{"language": "German", "level": "A2"}}
+    ]
+
+    If no languages found, return [].
+
+    TEXT:
+    {section[:4000]}
+    """
+
+        model = getattr(self, "model_name", getattr(self, "modelname", "qwen2.5:14b"))
+        
+        try:
+            resp = ollama.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.0, "num_predict": 500},
+            )
+            raw = resp["message"]["content"].strip()
+            print(f"📝 LANGUAGES RAW LLM ({len(raw)} chars):")
+            print(raw[:300])
+            
+            # Clean JSON
+            raw = raw.replace("``````", "").strip()
+            l = raw.find("[")
+            r = raw.rfind("]") + 1
+            
+            if l == -1 or r == 0 or r <= l:
+                print("❌ No JSON array for languages")
+                return []
+            
+            json_text = raw[l:r]
+            print(f"🔍 Languages JSON: {json_text[:200]}")
+            data = json.loads(json_text)
+            
+            if not isinstance(data, list):
+                return []
+            
+            # Normalizacja
+            normalized = []
+            for lang in data:
+                language = (lang.get("language") or lang.get("język") or "").strip()
+                level = (lang.get("level") or lang.get("poziom") or "").strip()
+                
+                if language:  # Minimum: nazwa języka
+                    normalized.append({
+                        "language": language,
+                        "level": level if level else "Not specified"
+                    })
+            
+            print(f"✅ Extracted {len(normalized)} languages:")
+            for l in normalized:
+                print(f"  - {l['language']}: {l['level']}")
+            
+            return normalized
+            
+        except Exception as e:
+            print(f"❌ Language extraction error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
 
     def extract_raw_experience_block(self, cv_text):
         # Look for the "Doświadczenie zawodowe" (case-insensitive)
@@ -1701,28 +1992,28 @@ class CVAnalyzer:
       
     def generate_pdf_output(self, analysis, template_type='full', language=None, client_requirements=''):
         """Generate PDF with FPDF2 - Arsenal font - 2 pages layout"""
-        
+        import re
+        from io import BytesIO
         filtered_analysis = self.apply_template_filters(analysis, template_type)
         if language is None:
             language = filtered_analysis.get('output_language', 'en')
+        
         # Font paths
-        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#
-        arsenal_bold = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf'#"/app/arsenal/Arsenal-Bold.ttf"
+        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'
+        arsenal_bold = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf'
         keywords = self._extract_keywords_from_requirements(client_requirements)
         print(f"🔍 Extracted {len(keywords)} keywords for highlighting: {keywords[:10]}")
         print(f"📝 Client requirements: {client_requirements[:100]}...")
 
-        # ✅ POPRAWNE:
         def safe_text(text, default='N/A'):
             if text is None or text == '':
                 return default
             return str(text)
 
-        
         def get_section_name(en_name):
             """Polish translation"""
+
             output_lang = filtered_analysis.get('output_language', 'english')
-            
             translations = {
                 'K E Y  H I G H L I G H T S':'P O D S U M O W A N I E  P R O F I L U',
                 'E D U C A T I O N': 'W Y K S Z T A Ł C E N I E',
@@ -1732,55 +2023,48 @@ class CVAnalyzer:
                 'S K I L L S': 'U M I E J Ę T N O Ś C I',
                 'T E C H  S T A C K': 'T E C H N O L O G I E',
                 'W O R K  E X P E R I E N C E': 'D O Ś W I A D C Z E N I E  Z A W O D O W E',
-                
             }
-            
             if output_lang == 'polish':
                 return translations.get(en_name, en_name)
             return en_name
-        
+
         # Get data
         work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
-        
         candidate_name = "CANDIDATE NAME"
         candidate_title = "Professional Title"
         
         if "podstawowe_dane" in filtered_analysis:
             candidate_name = safe_text(filtered_analysis["podstawowe_dane"].get('imie_nazwisko', 'CANDIDATE NAME')).upper()
         elif "personal_data" in filtered_analysis or "basic_data" in filtered_analysis:
-                # ← DODAJ TEN WARUNEK DLA ANGIELSKIEJ WERSJI
             basic = filtered_analysis.get("personal_data") or filtered_analysis.get("basic_data")
             if basic:
                 candidate_name = safe_text(basic.get('full_name') or basic.get('name') or 'CANDIDATE NAME').upper()
-            
+        
         if work_exp_data:
             candidate_title = safe_text(work_exp_data[0].get('stanowisko') or work_exp_data[0].get('position', 'Professional'))
-        
+
         # Create PDF
         pdf = FPDF(orientation='P', unit='mm', format='A4')
         pdf.add_page()
         
-        # Rejestruj czcionki
+        # Register fonts
         try:
             pdf.add_font('Arsenal', '', arsenal_regular)
             pdf.add_font('Arsenal', 'B', arsenal_bold)
             pdf.set_font('Arsenal', '', 10)
         except Exception as e:
             print(f"Font error: {e}")
-            # Fallback to built-in Helvetica font (always available in FPDF2)
             pdf.set_font('Helvetica', '', 10)
         
-        # Set margins
         pdf.set_margins(left=12.7, top=0, right=12.7)
-        
-        # ===== PAGE 1: HEADER + PROFILE SUMMARY (BULLET POINTS ONLY) =====
-        
+
+        # ===== PAGE 1: HEADER + KEY HIGHLIGHTS =====
         # Blue header
         pdf.set_fill_color(50, 130, 180)
         pdf.rect(0, 0, 210, 40, 'F')
         
         # Logo
-        logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png'#"/app/IS_New.png"
+        logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png'
         try:
             pdf.image(logo_path, x=5, y=9, w=50)
         except Exception as e:
@@ -1799,49 +2083,20 @@ class CVAnalyzer:
         
         # Back to black
         pdf.set_text_color(0, 0, 0)
-        
-        # Move down after header
         pdf.set_y(50)
         pdf.set_x(12.7)
-        
-        # ===== GENERATE KEY HIGHLIGHTS FROM PROFILE SUMMARY =====
+
+        # Generate/Display KEY HIGHLIGHTS
+        highlights = filtered_analysis.get("key_highlights", [])
         profile_summary = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
         
-        if profile_summary and not filtered_analysis.get("mocne_strony"):
-        # Najpierw spróbuj dzielić po bulletach
-            highlights = [h.strip() for h in profile_summary.split('•') if h.strip()]
-            
-            if not highlights:
-
-                sentences = re.split(r'\.\s+(?=[A-Z])', profile_summary)
-                highlights = []
-                for s in sentences:
-                    s = s.strip()
-                    if len(s) > 10:  # Minimum 10 znaków
-                        # Dodaj kropkę jeśli brak
-                        if not s.endswith('.'):
-                            s = s + '.'
-                        highlights.append(s)
-                    if len(highlights) >= 6:
-                        break
-            
-            filtered_analysis['mocne_strony'] = highlights[:6]
-        
-        # ===== DISPLAY KEY HIGHLIGHTS ON PAGE 1 =====
-        highlights = filtered_analysis.get("key_highlights", [])
-
-        # Zawsze wyświetlaj highlights, nawet jeśli są puste - wygeneruj je z profile_summary
-        if not highlights or len(highlights) == 0:
-            # Wygeneruj bullet points z profile_summary
-            profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
-            
-            if profile_text and profile_text.strip():
-                # Split by bullets lub zdania
-                if "•" in profile_text:
-                    highlights = [h.strip() for h in profile_text.split("•") if h.strip()][:6]
+        # Generate highlights if missing
+        if not highlights:
+            if profile_summary and profile_summary.strip():
+                if "•" in profile_summary:
+                    highlights = [h.strip() for h in profile_summary.split("•") if h.strip()][:6]
                 else:
-                    # Split by sentences
-                    sentences = re.split(r'\.\s+(?=[A-Z])', profile_text)
+                    sentences = re.split(r'\.\s+(?=[A-Z])', profile_summary)
                     highlights = []
                     for s in sentences:
                         s = s.strip()
@@ -1851,12 +2106,9 @@ class CVAnalyzer:
                             highlights.append(s)
                         if len(highlights) >= 6:
                             break
-
-        # Teraz zawsze wyświetl
+        
         if highlights:
             pdf.set_font('Arsenal', 'B', 13)
-            # Domyślnie 'en' jeśli brak parametru
-            pdf_language = language if language else 'en'
             pdf.cell(0, 5, get_section_name('K E Y  H I G H L I G H T S'), ln=True)
             
             # Underline
@@ -1868,7 +2120,6 @@ class CVAnalyzer:
             
             pdf.set_y(y_before + 3)
             pdf.set_x(12.7)
-            
             pdf.set_font('Arsenal', '', 11)
             
             for highlight in highlights:
@@ -1876,31 +2127,12 @@ class CVAnalyzer:
                 if highlight_text:
                     pdf.set_x(12.7)
                     current_y = self._write_text_with_underline(
-                                pdf, f"• {highlight_text}", 12.7, pdf.get_y(),
-                                185, 'Arsenal', 10, keywords, line_height=5
-                            )
+                        pdf, f"• {highlight_text}", 12.7, pdf.get_y(),
+                        185, 'Arsenal', 10, keywords, line_height=5
+                    )
                     pdf.set_y(current_y)
-                    
-        else:
-            # If no highlights, show plain profile summary
-            profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
-            if profile_text:
-                pdf.set_font('Arsenal', 'B', 11)
-                pdf.cell(0, 5, get_section_name('P R O F I L E  S U M M A R Y'), ln=True)
-                
-                # Underline
-                pdf.set_draw_color(76, 76, 76)
-                pdf.set_line_width(0.3)
-                y_before = pdf.get_y()
-                pdf.line(12.7, y_before, 197.3, y_before)
-                pdf.set_draw_color(0, 0, 0)
-                
-                pdf.set_y(y_before + 3)
-                pdf.set_x(12.7)
-                pdf.set_font('Arsenal', '', 9)
-                pdf.multi_cell(0, 4, profile_text, align='L')
-        
-        # ===== PAGE 2: TWO COLUMNS LAYOUT - NEW ORDER =====
+
+        # ===== PAGE 2: TWO COLUMNS LAYOUT =====
         pdf.add_page()
         pdf.set_margins(left=12.7, top=0, right=12.7)
         
@@ -1908,40 +2140,36 @@ class CVAnalyzer:
         pdf.set_fill_color(50, 130, 180)
         pdf.rect(0, 0, 210, 40, 'F')
         
-        # Logo
+        # Logo, Name, Title (same as page 1)
         try:
             pdf.image(logo_path, x=5, y=9, w=50)
         except Exception as e:
             print(f"Logo error: {e}")
         
-        # Name
         pdf.set_font('Arsenal', 'B', 24)
         pdf.set_text_color(255, 255, 255)
         pdf.set_xy(0, 12)
         pdf.cell(0, 8, candidate_name, align='C')
         
-        # Title
         pdf.set_font('Arsenal', '', 12)
         pdf.set_xy(0, 22)
         pdf.cell(0, 8, candidate_title, align='C')
         
-        # Back to black
         pdf.set_text_color(0, 0, 0)
-        
-        # Move down
-        pdf.set_y(50)
-        
-        # ===== TWO COLUMN LAYOUT - NEW ORDER =====
+
+        # ✅ FIXED COLUMN SETUP
+        page2_start_y = 50
         col_left_x = 12.7
-        col_right_x = 100
-        
-        col_left_width = 80
-        col_right_width = 97.3
-        
-        def add_section_header(x, title, max_width):
-            """Add section header with underline"""
-            pdf.set_font('Arsenal', 'B', 10)
+        col_right_x = 104      # Fixed position
+        col_left_width = 88    # Equal widths
+        col_right_width = 88
+        y_left = page2_start_y
+        y_right = page2_start_y
+
+        def add_section_header(pdf, x, title, max_width):
+            """Add section header with underline - FIXED"""
             pdf.set_xy(x, pdf.get_y())
+            pdf.set_font('Arsenal', 'B', 10)
             pdf.multi_cell(max_width, 5, title)
             
             pdf.set_draw_color(76, 76, 76)
@@ -1950,29 +2178,27 @@ class CVAnalyzer:
             pdf.line(x, y_pos, x + max_width - 2, y_pos)
             pdf.set_draw_color(0, 0, 0)
             
-            return y_pos + 3
-        
-        def add_text_column(x, text, font_size=9, max_width=45):
-            """Add wrapped text to column"""
+            return pdf.get_y() + 3
+
+        def add_text_column(pdf, x, text, font_size=9, max_width=88):
+            pdf.set_xy(x, pdf.get_y())
             pdf.set_font('Arsenal', '', font_size)
-            pdf.set_xy(x, pdf.get_y())
             pdf.multi_cell(max_width, 4, text, align='L')
-        
-        def add_bold_text_column(x, text, font_size=9, max_width=45):
-            """Add bold wrapped text to column"""
+
+        def add_bold_text_column(pdf, x, text, font_size=9, max_width=88):
+            pdf.set_xy(x, pdf.get_y())
             pdf.set_font('Arsenal', 'B', font_size)
-            pdf.set_xy(x, pdf.get_y())
             pdf.multi_cell(max_width, 4, text, align='L')
-        
-        # ===== LEFT COLUMN: SKILLS, TECH STACK, LANGUAGES, CERTIFICATIONS =====
+
+        # ═════ LEFT COLUMN: SKILLS, TECH STACK, LANGUAGES, CERTIFICATIONS ═════
+        pdf.set_xy(col_left_x, y_left)
         
         # SKILLS
         skills_data = filtered_analysis.get("umiejetnosci") or filtered_analysis.get("skills")
         if skills_data:
-            pdf.set_xy(col_left_x, 50)
-            y_left = add_section_header(col_left_x, get_section_name('S K I L L S'), col_left_width)
-            pdf.set_y(y_left)
-
+            y_left = add_section_header(pdf, col_left_x, get_section_name('S K I L L S'), col_left_width)
+            pdf.set_xy(col_left_x + 2, y_left)
+            
             skill_cats = [
                 ('programowanie_skrypty', 'programming_scripting', 'Programming'),
                 ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks'),
@@ -1983,129 +2209,152 @@ class CVAnalyzer:
                 ('monitoring', 'monitoring', 'Monitoring'),
                 ('inne', 'other', 'Other'),
             ]
-
+            
             for pl_key, en_key, label in skill_cats:
                 skills_list = skills_data.get(pl_key) or skills_data.get(en_key)
                 if not skills_list:
                     continue
-
+                
                 skills_str = ", ".join(safe_text(s) for s in skills_list)
-
-                # Label - bold (na osobnej linii, mały odstęp przed)
-                pdf.set_xy(col_left_x + 2, pdf.get_y() + 1)
-                add_bold_text_column(col_left_x + 2, f"{label}:", 8, col_left_width - 4)
-
-                # Technologies - normal, mały font, niższa linia
-                pdf.set_xy(col_left_x + 2, pdf.get_y())
+                
+                # Label
+                add_bold_text_column(pdf, col_left_x + 2, f"{label}:", 10, col_left_width - 4)
+                # Technologies
                 current_y = self._write_text_with_underline(
-                    pdf,
-                    skills_str,
-                    col_left_x + 2,
-                    pdf.get_y(),
-                    col_left_width - 4,
-                    'Arsenal',
-                    7,
-                    keywords,
-                    line_height=3.8
+                    pdf, skills_str, col_left_x + 2, pdf.get_y(),
+                    col_left_width - 4, 'Arsenal', 9, keywords, line_height=3.8
                 )
-                pdf.set_y(current_y + 1)
-        
+                pdf.set_xy(col_left_x + 2, current_y + 1)
+            
+            y_left = pdf.get_y() + 2
+
         # TECH STACK
         tech_summary = filtered_analysis.get("podsumowanie_technologii") or filtered_analysis.get("tech_stack_summary")
         if tech_summary:
-            pdf.set_xy(col_left_x, pdf.get_y())
-            y_left = add_section_header(col_left_x, get_section_name('T E C H  S T A C K'), col_left_width)
-            pdf.set_y(y_left)
-            description = tech_summary.get('opis') or tech_summary.get('description')
-            if description:
-                pdf.set_xy(col_left_x + 2, pdf.get_y())
-                add_text_column(col_left_x + 2, safe_text(description), 9, col_left_width - 4)
-                pdf.set_y(pdf.get_y() + 2)
-        
+            pdf.set_xy(col_left_x, y_left)
+            y_left = add_section_header(pdf, col_left_x, get_section_name('T E C H  S T A C K'), col_left_width)
+            pdf.set_xy(col_left_x + 2, y_left)
+            
+            # ✅ CASE 1: tech_summary jest DICT (preferowane)
+            if isinstance(tech_summary, dict):
+                description = tech_summary.get('opis') or tech_summary.get('description', '')
+                primary_tech = tech_summary.get('glownetechnologie') or tech_summary.get('primarytechnologies', [])
+                years_exp = tech_summary.get('latadoswiadczenia') or tech_summary.get('yearsofexperience', '')
+                
+                # 1. GŁÓWNY OPIS (summary głównych technologii)
+                if description:
+                    # Skróć do maksymalnie 2 linii
+                    description_short = safe_text(description)[:120]  # Skróć do 120 znaków
+                    pdf.set_xy(col_left_x + 2, y_left)
+                    pdf.set_font('Arsenal', '', 8)
+                    pdf.multi_cell(col_left_width - 4, 3.5, description_short, align='L')
+                    y_left = pdf.get_y() + 1
+                
+                # 2. GŁÓWNE TECHNOLOGIE (top 6)
+                if primary_tech:
+                    tech_list = primary_tech if isinstance(primary_tech, list) else [primary_tech]
+                    # Filtruj puste i konwertuj na string
+                    tech_list = [safe_text(t) for t in tech_list if safe_text(t) and safe_text(t) != 'N/A'][:6]
+                    
+                    if tech_list:
+                        pdf.set_xy(col_left_x + 2, y_left)
+                        pdf.set_font('Arsenal', 'B', 7)
+                        pdf.cell(col_left_width - 4, 3, "Main:", ln=False)
+                        
+                        pdf.set_font('Arsenal', '', 7)
+                        pdf.set_xy(col_left_x + 18, y_left)  # Przesunięcie od "Main:"
+                        pdf.multi_cell(col_left_width - 20, 3, ", ".join(tech_list), align='L')
+                        y_left = pdf.get_y() + 1
+                
+                # 3. DOŚWIADCZENIE (experience level)
+                if years_exp:
+                    years_exp_str = safe_text(years_exp)
+                    # Wyciągnij tylko liczbę
+                    import re
+                    years_match = re.search(r'(\d+)', years_exp_str)
+                    if years_match:
+                        years_num = years_match.group(1)
+                        pdf.set_xy(col_left_x + 2, y_left)
+                        pdf.set_font('Arsenal', 'B', 7)
+                        pdf.cell(0, 3, f"Exp: {years_num}+ yrs", ln=True)
+                        y_left = pdf.get_y() + 1
+            
+            # ✅ CASE 2: tech_summary jest STRING
+            else:
+                tech_text = safe_text(tech_summary)[:150]  # Skróć do 150 znaków
+                pdf.set_xy(col_left_x + 2, y_left)
+                pdf.set_font('Arsenal', '', 8)
+                pdf.multi_cell(col_left_width - 4, 3.5, tech_text, align='L')
+                y_left = pdf.get_y() + 1
+            
+            y_left = pdf.get_y() + 2
+
         # LANGUAGES
-        languages_data = filtered_analysis.get("jezyki_obce") or filtered_analysis.get("languages", [])
+        languages_data = filtered_analysis.get("języki_obce") or filtered_analysis.get("languages", [])
         if languages_data:
-            pdf.set_xy(col_left_x, pdf.get_y())
-            y_left = add_section_header(col_left_x, get_section_name('L A N G U A G E S'), col_left_width)
-            pdf.set_y(y_left)
+            pdf.set_xy(col_left_x, y_left)
+            y_left = add_section_header(pdf, col_left_x, get_section_name("L A N G U A G E S"), col_left_width)
+            pdf.set_xy(col_left_x + 2, y_left)
             
             for lang in languages_data:
-                language = safe_text(lang.get('jezyk') or lang.get('language', ''))
-                level = safe_text(lang.get('poziom') or lang.get('level', ''))
-                pdf.set_xy(col_left_x + 2, pdf.get_y())
-                add_text_column(col_left_x + 2, f"{language}: {level}", 9, col_left_width - 4)
-            
-            pdf.set_y(pdf.get_y() + 2)
-        
+                language = safe_text(lang.get("język") or lang.get("language"), "")
+                level = safe_text(lang.get("poziom") or lang.get("level"), "")
+                if language:
+                    text = f"{language}: {level}" if level else language
+                    pdf.set_xy(col_left_x + 2, pdf.get_y())  # ← DODANE: Ustaw X przed multi_cell
+                    pdf.set_font("Arsenal", "", 9)
+                    pdf.multi_cell(col_left_width - 4, 4, text, align="L")
+                    y_left = pdf.get_y() + 1  # ← DODANE: Aktualizuj y_left po KAŻDYM języku
+            y_left = pdf.get_y() + 2  # Final spacing
+
+
         # CERTIFICATIONS
         certs_and_courses = (
             filtered_analysis.get("certyfikaty_i_kursy") or 
             filtered_analysis.get("certifications_and_courses") or
             (filtered_analysis.get("certyfikaty", []) or []) + (filtered_analysis.get("certifications", []) or [])
         )
-        
         if certs_and_courses:
-            pdf.set_xy(col_left_x, pdf.get_y())
-            y_left = add_section_header(col_left_x, get_section_name('C E R T I F I C A T I O N S'), col_left_width)
-            pdf.set_y(y_left)
+            pdf.set_xy(col_left_x, y_left)
+            y_left = add_section_header(pdf, col_left_x, get_section_name('C E R T I F I C A T I O N S'), col_left_width)
+            pdf.set_xy(col_left_x + 2, y_left)
             
             for item in certs_and_courses:
                 item_name = safe_text(item.get('nazwa') or item.get('name', ''))
                 issuer = safe_text(item.get('wystawca') or item.get('issuer', ''))
-                
-                pdf.set_xy(col_left_x + 2, pdf.get_y())
-                add_bold_text_column(col_left_x + 2, item_name, 9, col_left_width - 4)
-                pdf.set_xy(col_left_x + 2, pdf.get_y())
-                add_text_column(col_left_x + 2, issuer, 9, col_left_width - 4)
-            
-            pdf.set_y(pdf.get_y() + 2)
-        
-        # ===== RIGHT COLUMN: PROFILE SUMMARY (FULL TEXT), WORK EXPERIENCE, EDUCATION =====
-        
-        # PROFILE SUMMARY - FULL TEXT (na drugiej stronie)
-        right_start_y = 50
-        pdf.set_y(right_start_y)
+                if item_name:
+                    add_bold_text_column(pdf, col_left_x + 2, item_name, 9, col_left_width - 4)
+                    if issuer and issuer != 'Not specified':
+                        add_text_column(pdf, col_left_x + 2, issuer, 9, col_left_width - 4)
+            y_left = pdf.get_y() + 2
 
-        # PROFILE SUMMARY - FULL TEXT
+        # ═════ RIGHT COLUMN - SYNCHRONIZED START ═════
+        pdf.set_xy(col_right_x, y_right)  # FIXED: Use y_right, not y_left!
+        
+        # PROFILE SUMMARY
         profile_summary = filtered_analysis.get('podsumowanie_profilu') or filtered_analysis.get('profile_summary')
-
         if profile_summary and profile_summary not in ["NA", "Nie podano w CV", "not provided", ""]:
-            pdf.set_xy(col_right_x, right_start_y)
-            y_right = add_section_header(
-                col_right_x,
-                get_section_name('P R O F I L E  S U M M A R Y'),
-                col_right_width
-            )
-            pdf.set_y(y_right)
-
+            y_right = add_section_header(pdf, col_right_x, get_section_name('P R O F I L E  S U M M A R Y'), col_right_width)
+            pdf.set_xy(col_right_x + 2, y_right)
+            
             profile_text = safe_text(profile_summary).replace('•', '').strip()
-
             current_y = self._write_text_with_underline(
-                pdf,
-                profile_text,
-                col_right_x + 2,
-                pdf.get_y(),
-                col_right_width - 4,
-                'Arsenal',
-                8,          # mniejszy font
-                keywords,
-                line_height=4
+                pdf, profile_text, col_right_x + 2, pdf.get_y(),
+                col_right_width - 4, 'Arsenal', 9, keywords, line_height=4
             )
-            pdf.set_y(current_y + 3)
-        else:
-            pdf.set_y(right_start_y)
+            y_right = current_y + 3
 
-        # ===== WORK EXPERIENCE =====
+        # WORK EXPERIENCE
         work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
-
         if work_exp_data:
-            pdf.set_xy(col_right_x, pdf.get_y())
-            y_right = add_section_header(col_right_x, get_section_name("WORK EXPERIENCE"), col_right_width)
-            pdf.set_y(y_right)
+            pdf.set_xy(col_right_x, y_right)
+            y_right = add_section_header(pdf, col_right_x, get_section_name("W O R K  E X P E R I E N C E"), col_right_width)
+            pdf.set_xy(col_right_x + 2, y_right)
+            y_right += 2
             
             for idx, exp in enumerate(work_exp_data):
                 if idx > 0:
-                    pdf.ln(4)
+                    y_right += 3
                 
                 period = safe_text(exp.get("okres") or exp.get("period"), "")
                 company = safe_text(exp.get("firma") or exp.get("company"), "")
@@ -2115,125 +2364,97 @@ class CVAnalyzer:
                 
                 # PERIOD
                 if period not in ("", "YYYY - YYYY", "Not specified", "NA"):
-                    pdf.set_xy(col_right_x + 2, pdf.get_y())
+                    pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font("Arsenal", "B", 8)
                     pdf.set_text_color(100, 100, 100)
                     pdf.cell(0, 4, period, ln=True)
                     pdf.set_text_color(0, 0, 0)
+                    y_right = pdf.get_y()
                 
                 # POSITION
                 if position not in ("", "NA", "Not specified"):
-                    pdf.set_xy(col_right_x + 2, pdf.get_y())
+                    pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font("Arsenal", "B", 9)
                     pdf.multi_cell(col_right_width - 4, 4, position, align="L")
+                    y_right = pdf.get_y()
                 
                 # COMPANY
                 if company not in ("", "NA", "Not specified"):
-                    pdf.set_xy(col_right_x + 2, pdf.get_y())
+                    pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font("Arsenal", "B", 8)
                     pdf.multi_cell(col_right_width - 4, 4, company, align="L")
+                    y_right = pdf.get_y()
                 
                 # ACHIEVEMENTS
                 if achievements and isinstance(achievements, list):
-                    pdf.set_font("Arsenal", "", 8)
+                    pdf.set_font("Arsenal", "", 9)
                     for ach in achievements:
                         bullet_text = safe_text(ach, "").strip()
                         if bullet_text and len(bullet_text) > 3:
-                            pdf.set_x(col_right_x + 4)
+                            pdf.set_xy(col_right_x + 4, y_right)
                             pdf.multi_cell(col_right_width - 6, 4, f"• {bullet_text}", align="L")
-                            pdf.ln(0.5)
+                            y_right = pdf.get_y()
                 
                 # TECH
                 if technologies:
                     tech_list = technologies if isinstance(technologies, list) else [technologies]
                     tech_str = ", ".join([safe_text(t, "") for t in tech_list if safe_text(t, "")])
                     if tech_str:
-                        pdf.set_x(col_right_x + 4)
-                        pdf.set_font("Arsenal", "", 7)
+                        pdf.set_xy(col_right_x + 4, y_right)
+                        pdf.set_font("Arsenal", "", 9)
                         pdf.set_text_color(80, 80, 80)
                         pdf.multi_cell(col_right_width - 6, 3.5, f"Tech: {tech_str}", align="L")
                         pdf.set_text_color(0, 0, 0)
-
-                pdf.ln(3)
-
-                # Spacing between jobs
-                pdf.set_y(pdf.get_y() + 3)
-
-        # ===== EDUCATION =====
-        education_data = filtered_analysis.get('wyksztalcenie') or filtered_analysis.get('education', [])
-        print(f"\n🎓 DEBUG generate_pdf_output educationdata: {len(education_data)} items")
-        for i, edu in enumerate(education_data[:5]):
-            print(f"  {i+1}. uczelnia={edu.get('uczelnia') or edu.get('school')}, "
-                f"kierunek={edu.get('kierunek') or edu.get('degree')}, "
-                f"okres={edu.get('okres') or edu.get('period')}")
+                        y_right = pdf.get_y()
             
-        if education_data:
-            pdf.set_xy(col_right_x, pdf.get_y() + 3)
-            y_right = add_section_header(
-                col_right_x,
-                get_section_name('E D U C A T I O N'),
-                col_right_width
-            )
-            pdf.set_y(y_right + 1)
+            y_right += 3
 
+        # EDUCATION
+        education_data = filtered_analysis.get('wyksztalcenie') or filtered_analysis.get('education', [])
+        if education_data:
+            pdf.set_xy(col_right_x, y_right)
+            y_right = add_section_header(pdf, col_right_x, get_section_name('E D U C A T I O N'), col_right_width)
+            pdf.set_xy(col_right_x + 2, y_right)
+            y_right += 1
+            
             for edu in education_data:
                 institution = safe_text(edu.get('uczelnia') or edu.get('institution', ''))
                 degree = safe_text(edu.get('stopien') or edu.get('degree', ''))
                 field = safe_text(edu.get('kierunek') or edu.get('field_of_study') or edu.get('field', ''))
                 period = safe_text(edu.get('okres') or edu.get('period', ''))
-
-                # Period – bold, 8 (szary)
+                
+                # Period
                 if period and period not in ['YYYY - YYYY', 'Not specified', '', 'N/A']:
-                    pdf.set_xy(col_right_x + 2, pdf.get_y())
+                    pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font('Arsenal', 'B', 8)
                     pdf.set_text_color(100, 100, 100)
                     pdf.cell(0, 4, period, ln=True)
                     pdf.set_text_color(0, 0, 0)
-
-                # Field + Degree – bold, 8
+                    y_right = pdf.get_y()
+                
+                # Field + Degree
                 if field or degree:
                     text_fd = f"{field}, {degree}" if field and degree else (field or degree)
-                    pdf.set_xy(col_right_x + 2, pdf.get_y())
+                    pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font('Arsenal', 'B', 8)
                     pdf.multi_cell(col_right_width - 4, 4, text_fd, align='L')
+                    y_right = pdf.get_y()
+                
+                # Institution
+                if institution and institution not in ["Nazwa uczelni", "Not specified", "", "NA"]:
+                    pdf.set_xy(col_right_x + 2, y_right)
+                    pdf.set_font('Arsenal', '', 9)
+                    pdf.multi_cell(col_right_width - 4, 4, institution, align='L')
+                    y_right = pdf.get_y()
+                
+                y_right += 2
 
-                # Institution – normal, 8
-                if institution and institution not in ['Nazwa uczelni', 'Not specified', '', 'N/A']:
-                    if institution and institution not in ["Nazwa uczelni", "Not specified", "", "NA"]:
-                        pdf.set_xy(col_right_x + 2, pdf.get_y())
-                        pdf.set_font('Arsenal', '', 8)
-                        pdf.multi_cell(col_right_width - 4, 4, institution, align='L')
-
-                # mały odstęp, nie +5
-                pdf.set_y(pdf.get_y() + 2)
-
-        # ===== GENERATE KEY HIGHLIGHTS FROM PROFILE SUMMARY =====
-        profile_text = filtered_analysis.get("podsumowanie_profilu") or filtered_analysis.get("profile_summary") or ""
-        
-        # Generate highlights if they don't exist yet
-        if profile_text and not filtered_analysis.get("mocne_strony"):
-            # Try splitting by bullets first
-            highlights = [h.strip() for h in profile_text.split('•') if h.strip()]
-            
-            # If no bullets, split by sentences
-            if not highlights or len(highlights) < 2:
-                sentences = re.split(r'\.\s+(?=[A-Z])', profile_text)
-                highlights = []
-                for s in sentences:
-                    s = s.strip()
-                    if len(s) > 10:
-                        if not s.endswith('.'):
-                            s = s + '.'
-                        highlights.append(s)
-                    if len(highlights) >= 6:
-                        break
-            
-            filtered_analysis['mocne_strony'] = highlights[:6] if highlights else []
         # Save to buffer
         buffer = BytesIO()
         pdf.output(buffer)
         buffer.seek(0)
         return buffer
+
     
     def generate_docx_output(self, analysis, template_type='full', language=None, client_requirements=''):
         """Generate DOCX with Arsenal font - all headers with underlines"""
@@ -2245,7 +2466,7 @@ class CVAnalyzer:
             language = filtered_analysis.get('output_language', 'en')
         
         # Arsenal font path
-        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#"/app/arsenal/Arsenal-Regular.ttf"
+        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#
         
         def safe_text(value, default=''):
             return str(value).strip() if value and str(value).strip() not in ['None', 'null', 'N/A'] else default
