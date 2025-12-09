@@ -287,16 +287,18 @@ with st.sidebar:
     # Template selection - NOWE!
     template_type = st.selectbox(
         "📋 " + ("Szablon raportu" if ui_language == 'pl' else "Report Template"),
-        options=['full', 'short', 'anonymous', 'extended'],
+        options=['full', 'short', 'anonymous', 'extended', 'one_to_one'],
         format_func=lambda x: {
             'full': '📄 ' + ('Pełny (z danymi)' if ui_language == 'pl' else 'Full (with data)'),
             'short': '📝 ' + ('Skrócony' if ui_language == 'pl' else 'Short'),
             'anonymous': '🔒 ' + ('Anonimowy (bez danych)' if ui_language == 'pl' else 'Anonymous (no data)'),
-            'extended': '📚 ' + ('Rozszerzony (szczegółowy)' if ui_language == 'pl' else 'Extended (detailed)')
+            'extended': '📚 ' + ('Rozszerzony (szczegółowy)' if ui_language == 'pl' else 'Extended (detailed)'),
+            'one_to_one': '1️⃣ ' + ('1:1 z CV (bez rekomendacji)' if ui_language == 'pl' else '1:1 from CV (no recommendation)')
         }[x],
         index=0,
         help="Wybierz typ szablonu raportu" if ui_language == 'pl' else "Select report template type"
     )
+
     
     # Template description
     template_descriptions = {
@@ -304,15 +306,18 @@ with st.sidebar:
             'full': '✓ Wszystkie dane kontaktowe\n✓ Pełne doświadczenie\n✓ Szczegółowa analiza',
             'short': '✓ Kluczowe informacje\n✓ Top 3 doświadczenia\n✓ 5 głównych umiejętności',
             'anonymous': '✓ Bez danych osobowych\n✓ Ukryte firmy/uczelnie\n✓ Tylko kompetencje',
-            'extended': '✓ Pełne CV + analiza\n✓ Pytania rekrutacyjne\n✓ Obszary rozwoju'
+            'extended': '✓ Pełne CV + analiza\n✓ Pytania rekrutacyjne\n✓ Obszary rozwoju',
+            'one_to_one': '✓ Struktura z CV\n✓ Zadania 1:1 z analizy\n✓ Bez rekomendacji i podsumowań'
         },
         'en': {
             'full': '✓ All contact details\n✓ Full experience\n✓ Detailed analysis',
             'short': '✓ Key information\n✓ Top 3 experiences\n✓ 5 main skills',
             'anonymous': '✓ No personal data\n✓ Hidden companies/universities\n✓ Competencies only',
-            'extended': '✓ Full CV + analysis\n✓ Interview questions\n✓ Development areas'
+            'extended': '✓ Full CV + analysis\n✓ Interview questions\n✓ Development areas',
+            'one_to_one': '✓ Structure from CV\n✓ Tasks 1:1 from analysis\n✓ No recommendations/summary'
         }
     }
+
     
     st.info(template_descriptions[ui_language][template_type])
     # ============= END OF TEMPLATE SELECTOR =============
@@ -338,9 +343,17 @@ with col1:
     )
     
     if uploaded_file is not None:
-        st.success(f"{t['file_uploaded']} {uploaded_file.name}")
+        # RESETUJ SESSION STATE DLA NOWEGO PLIKU!
+        current_file_name = st.session_state.get('current_file_name', None)
         
-        # File info
+        if current_file_name != uploaded_file.name:
+            # Nowy plik - resetuj wszystko
+            st.session_state['analysis_result'] = None
+            st.session_state['cv_text'] = None
+            st.session_state['current_file_name'] = uploaded_file.name
+            st.rerun()  # Wymusza odświeżenie UI
+        
+        st.success(f"✅ {t['file_uploaded']}: {uploaded_file.name}")
         file_details = {
             t['filename']: uploaded_file.name,
             t['filetype']: uploaded_file.type,
@@ -354,9 +367,10 @@ with col2:
     # Client requirements input
     client_requirements = st.text_area(
         t['enter_req'],
-        value=t['default_req'],
-        height=200,
-        help=t['req_help']
+        value="",                      # brak startowego tekstu
+        placeholder=t['default_req'],  # szary tekst‑podpowiedź
+        help=t['req_help'],
+        height=220,
     )
 
 # Custom Prompt (Optional)
@@ -588,51 +602,64 @@ if st.session_state.analysis_result is not None:
 # Download Section
 with col_download:
     if st.session_state.analysis_result is not None:
+        st.markdown("### 📥 Pobierz raport")
+        
+        # DODAJ EDYTOWALNĄ NAZWĘ PLIKU
+        default_name = uploaded_file.name.rsplit('.', 1)[0] if uploaded_file else "cv_analysis"
+        
+        custom_filename = st.text_input(
+            "Nazwa pliku raportu" if ui_language == 'pl' else "Report filename",
+            value=f"{default_name}_{template_type}",
+            help="Bez rozszerzenia (.pdf/.docx)" if ui_language == 'pl' else "Without extension (.pdf/.docx)"
+        )
+        
+        # Usuń nielegalne znaki z nazwy pliku
+        import re
+        safe_filename = re.sub(r'[<>:"/\\|?*]', '_', custom_filename)
+        
         analyzer = CVAnalyzer(model_name=model_name)
         
-        # Add template type caption
-        st.caption(f"Szablon: {template_type.upper()}")
-        
         if output_format == "PDF":
-    # Ustaw język na podstawie wybranego guzika
-            pdf_language = 'pl' if "Polski" in st.session_state.get('language_choice', 'English') else 'en'
+            pdf_language = 'pl' if 'Polski' in st.session_state.get('language_choice', 'English') else 'en'
             
             pdf_buffer = analyzer.generate_pdf_output(
                 st.session_state.analysis_result,
                 template_type=template_type,
-                language=pdf_language,  # ← DODAJ TEN WIERSZ!
+                language=pdf_language,
                 client_requirements=client_requirements
             )
+            
             st.download_button(
-                label=t['download_pdf'],
+                label=f"📄 {t['download_pdf']}",
                 data=pdf_buffer,
-                file_name=f"cv_analysis_{template_type}.pdf",
+                file_name=f"{safe_filename}.pdf",  # ← UŻYJ CUSTOM NAZWY
                 mime="application/pdf",
                 use_container_width=True
             )
+            
         elif output_format == "DOCX":
             lang_map = {'auto': 'auto', 'pl': 'polish', 'en': 'english'}
             mapped_output_lang = lang_map.get(output_language, 'auto')
             
             docx_buffer = analyzer.generate_docx_output(
-        st.session_state.analysis_result,
-        template_type=template_type,
-        language=mapped_output_lang,
-        client_requirements=client_requirements  # ← KLUCZOWE!
-    )
+                st.session_state.analysis_result,
+                template_type=template_type,
+                language=mapped_output_lang,
+                client_requirements=client_requirements
+            )
+            
             if docx_buffer and isinstance(docx_buffer, BytesIO):
                 st.download_button(
-                    label=t['download_docx'],
+                    label=f"📄 {t['download_docx']}",
                     data=docx_buffer.getvalue(),
-                    file_name="cv_analysis_report.docx",
+                    file_name=f"{safe_filename}.docx",  # ← UŻYJ CUSTOM NAZWY
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True
                 )
             else:
                 st.error("❌ DOCX generation failed. Check backend logs.")
-            
-    
-            
+        
+                      
 if st.session_state.analysis_result is not None:
     st.markdown("---")
     st.markdown(f'<div class="section-header">{t["aitab"]}</div>', unsafe_allow_html=True)
