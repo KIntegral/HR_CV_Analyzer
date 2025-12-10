@@ -62,10 +62,10 @@ TRANSLATIONS = {
         'availability': 'Dostępność',
         'summary': '💼 Podsumowanie kandydata',
         'tech_stack': '💻 Stack technologiczny',
-        'languages_prog': '**Języki programowania:**',
-        'frameworks': '**Frameworki:**',
-        'databases': '**Bazy danych:**',
-        'tools': '**Narzędzia:**',
+        'languagesprog': 'Języki programowania',
+        'frameworks': 'Frameworki',
+        'databases': 'Bazy danych',
+        'tools': 'Narzędzia',
         'fit_assessment': '🎯 Ocena dopasowania',
         'match_level': 'Poziom dopasowania',
         'recommendation': 'Rekomendacja',
@@ -485,23 +485,106 @@ if st.session_state.analysis_result is not None:
             col3.metric(t['availability'], lok.get('dostepnosc') or lok.get('availability') or "NA")
         
         # Candidate Summary
-        if 'krotki_opis_kandydata' in analysis or 'profile_summary' in analysis:
-            st.subheader(t['summary'])
-            summary = analysis.get('krotki_opis_kandydata') or analysis.get('profile_summary') or analysis.get('podsumowanie_profilu')
+        if "krotki_opis_kandydata" in analysis or "profile_summary" in analysis:
+            st.subheader(t["summary"])
+            summary = analysis.get("krótki_opis_kandydata") or analysis.get("profile_summary") or analysis.get("podsumowanie_profilu")
             st.info(summary)
-        
-        # Tech Stack
-        if 'stack_technologiczny' in analysis or 'skills' in analysis or 'umiejetnosci' in analysis:
-            st.subheader(t['techstack'])
-            stack = analysis.get('stack_technologiczny') or analysis.get('skills') or analysis.get('umiejetnosci')
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"{t['languagesprog']}: ", ", ".join(stack.get('jezyki_programowania') or stack.get('programming_scripting') or []))
-                st.write(f"{t['frameworks']}: ", ", ".join(stack.get('frameworki') or stack.get('frameworks_libraries') or []))
-            with col2:
-                st.write(f"{t['databases']}: ", ", ".join(stack.get('bazy_danych') or stack.get('databases_messaging') or []))
-                st.write(f"{t['tools']}: ", ", ".join(stack.get('narzedzia') or stack.get('infrastructure_devops') or []))
+
+        # ✅ Tech Stack Summary - NAPRAWIONE dla polskiego
+        # --- Tech Stack (ujednolicony PL/EN) ---
+        tech_summary = (
+            analysis.get("tech_stack_summary")
+            or analysis.get("podsumowanie_technologii")
+        )
+        skills = (
+            analysis.get("skills")
+            or analysis.get("umiejetnosci")
+            or analysis.get("umiejętności")
+            or {}
+        )
+
+        if tech_summary or skills:
+            st.subheader(t["techstack"])
+
+            # 1) Main technologies / Główne technologie + Experience
+            primary_tech = []
+            years_exp = ""
+
+            if isinstance(tech_summary, dict):
+                primary_tech = (
+                    tech_summary.get("primary_technologies")
+                    or tech_summary.get("glowne_technologie")
+                    or []
+                )
+                years_exp = (
+                    tech_summary.get("years_of_experience")
+                    or tech_summary.get("lata_doswiadczenia")
+                    or ""
+                )
+                description = tech_summary.get("description") or tech_summary.get("opis", "")
+                if description:
+                    st.info(description)
+            elif isinstance(tech_summary, str):
+                st.info(tech_summary)
+
+            if primary_tech:
+                tech_list = primary_tech if isinstance(primary_tech, list) else [primary_tech]
+                label_main = "Główne technologie" if ui_language == "pl" else "Main technologies"
+                st.write(f"**{label_main}:** {', '.join(tech_list[:6])}")
+
+            if years_exp:
+                label_exp = "Doświadczenie" if ui_language == "pl" else "Experience"
+                st.write(f"**{label_exp}:** {years_exp}")
+
+            # 2) Szczegółowy podział: Languages / Frameworks / Databases / Tools
+            if isinstance(skills, dict) and skills:
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # Programming Languages / Języki programowania
+                    langs = (
+                        skills.get("programming_scripting")
+                        or skills.get("jezyki_programowania")
+                        or skills.get("języki_programowania")
+                        or []
+                    )
+                    langs_clean = [l for l in langs if l and l.strip() != "-"]
+                    st.write(f"**{t['languagesprog']}:** {', '.join(langs_clean) if langs_clean else '-'}")
+
+                    # Frameworks / Biblioteki
+                    frameworks = (
+                        skills.get("frameworks_libraries")
+                        or skills.get("frameworki_biblioteki")
+                        or skills.get("frameworki")
+                        or []
+                    )
+                    frameworks_clean = [f for f in frameworks if f and f.strip() != "-"]
+                    st.write(f"**{t['frameworks']}:** {', '.join(frameworks_clean) if frameworks_clean else '-'}")
+
+                with col2:
+                    # Bazy danych / Kolejki
+                    dbs = (
+                        skills.get("databases_messaging")
+                        or skills.get("bazy_danych")
+                        or skills.get("bazy_kolejki")
+                        or []
+                    )
+                    dbs_clean = [d for d in dbs if d and d.strip() != "-"]
+                    st.write(f"**{t['databases']}:** {', '.join(dbs_clean) if dbs_clean else '-'}")
+
+                    # Narzędzia / DevOps
+                    tools = (
+                        skills.get("infrastructure_devops")
+                        or skills.get("infrastruktura_devops")
+                        or skills.get("narzedzia")
+                        or skills.get("narzędzia")
+                        or []
+                    )
+                    tools_clean = [tool for tool in tools if tool and tool.strip() != "-"]
+                    st.write(f"**{t['tools']}:** {', '.join(tools_clean) if tools_clean else '-'}")
+
+
+
         
         # Fit Assessment
         if 'dopasowanie_do_wymagan' in analysis or 'matching_to_requirements' in analysis:
@@ -718,39 +801,50 @@ if st.session_state.analysis_result is not None:
 
         context_data = {}
         
-        # Fix 1: Use correct English keys from your analysis
-        if inc_tech and 'tech_stack_summary' in analysis:
-            tech = analysis['tech_stack_summary']
-            primary_techs = tech.get('primary_technologies', [])
-            context_data['TechStack'] = ', '.join(primary_techs) if primary_techs else ''
+        # Obsługa zarówno polskiej i angielskiej wersji kluczy
+        if inc_tech:
+            tech = (analysis.get('tech_stack_summary') or 
+                    analysis.get('podsumowanie_technologii') or {})
+            
+            if isinstance(tech, dict):
+                primary_techs = (tech.get('primary_technologies') or 
+                            tech.get('glowne_technologie') or [])
+                context_data['TechStack'] = ', '.join(primary_techs) if primary_techs else ''
+            elif isinstance(tech, str):
+                context_data['TechStack'] = tech[:200]
         
-        if inc_exp and 'work_experience' in analysis:
-            jobs = analysis['work_experience']
+        if inc_exp:
+            jobs = (analysis.get('work_experience') or 
+                    analysis.get('doswiadczenie_zawodowe') or [])
+            
             exp_summary = []
-            for job in jobs[:3]:  # Top 3 positions
-                company = job.get('company', '')
-                position = job.get('position', '')
+            for job in jobs[:3]:
+                company = job.get('company') or job.get('firma') or ''
+                position = job.get('position') or job.get('stanowisko') or ''
                 if company and position:
-                    exp_summary.append(f"{position} at {company}")
+                    exp_summary.append(f"{position} w {company}" if ui_language == 'pl' else f"{position} at {company}")
             context_data['Experience'] = '; '.join(exp_summary) if exp_summary else ''
         
-        if inc_skills and 'skills' in analysis:
-            skills = analysis['skills']
+        if inc_skills:
+            skills = (analysis.get('skills') or analysis.get('umiejetnosci') or {})
             all_skills = []
-            # Collect all skills from all categories
             for category, skill_list in skills.items():
                 if isinstance(skill_list, list):
-                    all_skills.extend(skill_list[:5])  # Top 5 from each category
-            context_data['Skills'] = ', '.join(all_skills[:15]) if all_skills else ''  # Max 15 total
+                    all_skills.extend(skill_list[:5])
+            context_data['Skills'] = ', '.join(all_skills[:15]) if all_skills else ''
         
-        if inc_summary and 'profile_summary' in analysis:
-            context_data['ProfileSummary'] = analysis['profile_summary']
+        if inc_summary:
+            summary = (analysis.get('profile_summary') or 
+                    analysis.get('podsumowanie_profilu') or '')
+            context_data['ProfileSummary'] = summary
 
         # Also add matching info if available
-        if 'matching_to_requirements' in analysis:
-            match = analysis['matching_to_requirements']
-            if 'strengths' in match:
-                context_data['Strengths'] = '; '.join(match['strengths'][:3])
+        matching = (analysis.get('matching_to_requirements') or 
+                    analysis.get('dopasowanie_do_wymagan') or {})
+        if matching:
+            strengths = matching.get('strengths') or matching.get('mocne_strony') or []
+            if strengths:
+                context_data['Strengths'] = '; '.join(strengths[:3])
 
         st.write(ai_t['instruction'])
 
@@ -758,7 +852,7 @@ if st.session_state.analysis_result is not None:
         if "ai_instr" not in st.session_state:
             st.session_state["ai_instr"] = ""
 
-        # Quick action buttons
+        # ✅ POPRAWKA: Quick action buttons zależne od języka
         col1, col2, col3 = st.columns(3)
         with col1:
             if st.button(t['ait_btn_tasks'], use_container_width=True):
@@ -779,11 +873,13 @@ if st.session_state.analysis_result is not None:
             label_visibility="collapsed"
         )
 
-        # Generate button
+        # ✅ POPRAWKA: Generate button z info o języku
         if st.button(f"✨ {ai_t['generate']}", type="primary"):
             if st.session_state["ai_instr"].strip() and context_data:
                 with st.spinner(ai_t['generating']):
                     analyzer = CVAnalyzer(model_name=model_name)
+                    # ✅ NOWE: Przekaż informację o języku poprzez kontekst
+                    context_data['_interface_language'] = ui_language  # ← DODANE
                     generated = analyzer.ai_text_assistant(
                         st.session_state["ai_instr"], 
                         context_data
@@ -796,7 +892,6 @@ if st.session_state.analysis_result is not None:
         if 'generated' in st.session_state:
             st.success(ai_t['result'])
             st.info(st.session_state['generated'])
-
 
 # Footer
 st.markdown("---")

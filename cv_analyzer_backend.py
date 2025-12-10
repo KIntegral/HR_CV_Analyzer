@@ -458,8 +458,14 @@ class CVAnalyzer:
             "output_language": final_language
         }
 
-        
         if final_language == "polish":
+            # ✅ TŁUMACZENIE: Lokalizacja, key highlights, matching
+            location_pl = self.translate_text(location, 'polish')
+            key_highlights_pl = self.translate_text(key_highlights, 'polish')
+            match_level_pl = self.translate_text("high", 'polish')
+            justification_pl = self.translate_text("Candidate meets all key requirements", 'polish')
+            tech_desc_pl = f"Biegłość w {', '.join(extracted_tech[:8])}"
+            
             analysis.update({
                 "podstawowe_dane": {
                     "imie_nazwisko": full_name,
@@ -467,12 +473,12 @@ class CVAnalyzer:
                     "telefon": phone
                 },
                 "lokalizacja_i_dostepnosc": {
-                    "lokalizacja": location,
+                    "lokalizacja": location_pl,  # ← TŁUMACZONE
                     "preferencja_pracy_zdalnej": "nie określona",
                     "dostepnosc": "nie określona"
                 },
                 "podsumowanie_profilu": profile_summary,
-                'key_highlights': key_highlights,
+                'key_highlights': key_highlights_pl,  # ← TŁUMACZONE
                 "doswiadczenie_zawodowe": [
                     {
                         "okres": job['period'],
@@ -494,15 +500,15 @@ class CVAnalyzer:
                     for edu in education
                 ],
                 "certyfikaty_i_kursy": [
-                        {
-                            "nazwa": cert["name"], 
-                            "typ": cert["type"], 
-                            "wystawca": cert["issuer"], 
-                            "data": cert["date"],
-                            "szczegóły": cert.get("details", "")
-                        } 
-                        for cert in certifications_data
-                    ],
+                    {
+                        "nazwa": cert["name"],
+                        "typ": cert["type"],
+                        "wystawca": cert["issuer"],
+                        "data": cert["date"],
+                        "szczegóły": cert.get("details", "")
+                    }
+                    for cert in certifications_data
+                ],
                 "jezyki_obce": [{"język": lang["language"], "poziom": lang["level"]} for lang in languages_data],
                 "umiejetnosci": {
                     "programowanie_skrypty": categorized_tech.get('programming_scripting', []),
@@ -514,18 +520,19 @@ class CVAnalyzer:
                     "inne": categorized_tech.get('other', [])
                 },
                 "podsumowanie_technologii": {
-                    "opis": f"Proficient in {', '.join(extracted_tech[:8])}",
+                    "opis": tech_desc_pl,  # ← TŁUMACZONE
                     "glowne_technologie": extracted_tech[:10],
                     "lata_doswiadczenia": "10+"
                 },
                 "dopasowanie_do_wymagan": {
-                    "mocne_strony": ["Strong technical background", "Extensive experience", "Proven track record"],
-                    "poziom_dopasowania": "high",
-                    "uzasadnienie": "Candidate meets all key requirements",
+                    "mocne_strony": key_highlights_pl,  # ← TŁUMACZONE
+                    "poziom_dopasowania": match_level_pl,  # ← TŁUMACZONE (high → wysoki)
+                    "uzasadnienie": justification_pl,  # ← TŁUMACZONE
                     "rekomendacja": "TAK"
                 }
             })
         else:
+            # English version - no translation needed
             analysis.update({
                 "basic_data": {
                     "full_name": full_name,
@@ -561,12 +568,12 @@ class CVAnalyzer:
                 ],
                 "certifications_and_courses": [
                     {
-                        "name": cert["name"], 
-                        "type": cert["type"], 
-                        "issuer": cert["issuer"], 
+                        "name": cert["name"],
+                        "type": cert["type"],
+                        "issuer": cert["issuer"],
                         "date": cert["date"],
                         "details": cert.get("details", "")
-                    } 
+                    }
                     for cert in certifications_data
                 ],
                 "languages": [{"language": lang["language"], "level": lang["level"]} for lang in languages_data],
@@ -618,6 +625,9 @@ class CVAnalyzer:
         if model_name is None:
             model_name = self.model_name
         
+        # ✅ NOWOŚĆ: Wykryj język z kontekstu (jeśli dostępny z UI)
+        ui_language = context_data.pop('_interface_language', None)
+        
         # Build context from data
         context = "CONTEXT DATA:\n"
         for key, value in context_data.items():
@@ -626,34 +636,122 @@ class CVAnalyzer:
             else:
                 context += f"{key}: {value}\n"
         
-        prompt = f"""You are an AI writing assistant for HR professionals.
+        # ✅ POPRAWKA: Wykrywaj język instrukcji (priorytet dla UI language)
+        instruction_lower = instruction.lower()
+        
+        # Sprawdź czy instrukcja jest po polsku
+        polish_keywords = ['opisz', 'wygeneruj', 'uzasadnij', 'na podstawie', 'zadania', 'profil', 
+                        'kandydata', 'dlaczego', 'pasuje', 'stanowisko', 'technologi', 'zwięzły']
+        is_polish = any(word in instruction_lower for word in polish_keywords)
+        
+        # Jeśli mamy informację z UI, użyj jej
+        if ui_language:
+            is_polish = (ui_language == 'pl')
+        
+        if is_polish:
+            prompt = f"""Jesteś AI asystentem dla specjalistów HR.
 
     {context}
 
-    USER INSTRUCTION: {instruction}
+    INSTRUKCJA UŻYTKOWNIKA:
+    {instruction}
 
-    Please execute the instruction based on the context provided above.
-    Respond in the same language as the instruction.
-    Be professional, clear, and concise.
-    If correcting text, maintain the original structure but fix errors.
-    If generating text, make it relevant to HR and recruitment context.
+    ZASADY:
+    1. Wykonaj instrukcję na podstawie podanych danych
+    2. Odpowiedz PO POLSKU
+    3. Bądź profesjonalny, jasny i zwięzły
+    4. Jeśli poprawiasz tekst, zachowaj strukturę, ale napraw błędy
+    5. Jeśli generujesz tekst, dopasuj go do kontekstu rekrutacji HR
+    6. NIE UŻYWAJ ogólników typu "idealny kandydat" - pisz konkretnie o umiejętnościach z CV
+    7. Pisz w pierwszej osobie (np. "Posiadam", "Specjalizuję się") jeśli generujesz opis profilu
+
+    TWOJA ODPOWIEDŹ:"""
+        else:
+            prompt = f"""You are an AI writing assistant for HR professionals.
+
+    {context}
+
+    USER INSTRUCTION:
+    {instruction}
+
+    RULES:
+    1. Execute the instruction based on the context provided above
+    2. Respond in ENGLISH
+    3. Be professional, clear, and concise
+    4. If correcting text, maintain the original structure but fix errors
+    5. If generating text, make it relevant to HR and recruitment context
+    6. DO NOT use generic phrases like "ideal candidate" - write specifically about CV skills
+    7. Write in first person (e.g., "I have", "I specialize") when generating profile descriptions
 
     YOUR RESPONSE:"""
 
         try:
             response = ollama.chat(
                 model=model_name,
-                messages=[{'role': 'user', 'content': prompt}],
+                messages=[{"role": "user", "content": prompt}],
                 options={
-                    'temperature': 0.7,  # Higher for creative tasks
-                    'top_p': 0.9,
-                    'num_predict': 1000
+                    "temperature": 0.7,  # Higher for creative tasks
+                    "top_p": 0.9,
+                    "num_predict": 1000
                 }
             )
-            
             return response['message']['content']
         except Exception as e:
             return f"Error: {str(e)}"
+
+    def translate_text(self, text, target_language='polish'):
+        """
+        Translate text from English to Polish (or vice versa) using Ollama.
+        
+        Args:
+            text: Text to translate (str or list of str)
+            target_language: 'polish' or 'english'
+        
+        Returns:
+            Translated text (same type as input - str or list)
+        """
+        # Handle list input
+        if isinstance(text, list):
+            return [self.translate_text(item, target_language) for item in text]
+        
+        # Skip if already in target language or empty
+        if not text or len(text.strip()) < 2:
+            return text
+        
+        # Detect source language
+        polish_chars = sum(1 for c in text if c in 'ąćęłńóśźżĄĆĘŁŃÓŚŹŻ')
+        is_polish_source = polish_chars > 0
+        
+        if target_language == 'polish' and is_polish_source:
+            return text  # Already Polish
+        elif target_language == 'english' and not is_polish_source:
+            return text  # Already English
+        
+        # Translate
+        if target_language == 'polish':
+            prompt = f"""Translate this text from English to Polish. Return ONLY the translation, no explanations.
+
+    English: {text}
+    Polish:"""
+        else:
+            prompt = f"""Translate this text from Polish to English. Return ONLY the translation, no explanations.
+
+    Polish: {text}
+    English:"""
+        
+        try:
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[{'role': 'user', 'content': prompt}],
+                options={'temperature': 0.1, 'num_predict': 100}
+            )
+            translated = response['message']['content'].strip()
+            # Clean up any quotes or extra formatting
+            translated = translated.strip('"\'')
+            return translated
+        except Exception as e:
+            print(f"❌ Translation error: {e}")
+            return text  # Return original if translation fails
 
     def apply_template_filters(self, analysis, template_type='full'):
         """Apply template filters - IMPROVED"""
@@ -747,7 +845,7 @@ class CVAnalyzer:
             return response['message']['content']
         except Exception as e:
             return f"Error: {str(e)}"
-        
+      
     def _extract_technologies_from_cv(self, cv_text):
         """
         STEP 1: Extract ALL technologies from CV text
@@ -2175,7 +2273,29 @@ class CVAnalyzer:
             return cv_text[start_idx:end_idx].strip()
         else:
             return cv_text[start_idx:].strip()
-      
+    def translate_skill_category(self, category_key, target_language='polish'):
+        """
+        Translate skill category keys to Polish or English.
+        
+        Args:
+            category_key: English key like 'programming_scripting', 'frameworks_libraries'
+            target_language: 'polish' or 'english'
+        
+        Returns:
+            Translated category name
+        """
+        translations = {
+            'programming_scripting': {'polish': 'Programowanie i skrypty', 'english': 'Programming & Scripting'},
+            'frameworks_libraries': {'polish': 'Frameworki i biblioteki', 'english': 'Frameworks & Libraries'},
+            'infrastructure_devops': {'polish': 'Infrastruktura i DevOps', 'english': 'Infrastructure & DevOps'},
+            'cloud': {'polish': 'Chmura', 'english': 'Cloud'},
+            'databases_messaging': {'polish': 'Bazy danych i kolejki', 'english': 'Databases & Messaging'},
+            'mobile': {'polish': 'Mobile', 'english': 'Mobile'},
+            'monitoring': {'polish': 'Monitoring', 'english': 'Monitoring'},
+            'other': {'polish': 'Inne', 'english': 'Other'}
+        }
+        
+        return translations.get(category_key, {}).get(target_language, category_key)  
     def generate_pdf_output(self, analysis, template_type='full', language=None, client_requirements=''):
         """Generate PDF with FPDF2 - Arsenal font - 2 pages layout"""
         import re
@@ -2187,8 +2307,8 @@ class CVAnalyzer:
             language = filtered_analysis.get('output_language', 'en')
         
         # Font paths
-        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'
-        arsenal_bold = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf'
+        arsenal_regular =  r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'# "/app/arsenal/Arsenal-Regular.ttf" 
+        arsenal_bold =r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf' #"/app/arsenal/Arsenal-Bold.ttf" 
         
         if template_mode == 'one_to_one':
             keywords = []
@@ -2258,7 +2378,7 @@ class CVAnalyzer:
             pdf.rect(0, 0, 210, 40, 'F')
             
             # Logo
-            logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png'
+            logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #"/app/IS_New.png" 
             try:
                 pdf.image(logo_path, x=5, y=9, w=50)
             except Exception as e:
@@ -2375,6 +2495,8 @@ class CVAnalyzer:
             
             return pdf.get_y() + 3
 
+
+
         def add_text_column(pdf, x, text, font_size=9, max_width=88):
             pdf.set_xy(x, pdf.get_y())
             pdf.set_font('Arsenal', '', font_size)
@@ -2387,7 +2509,7 @@ class CVAnalyzer:
 
         # ═════ LEFT COLUMN: SKILLS, TECH STACK, LANGUAGES, CERTIFICATIONS ═════
         pdf.set_xy(col_left_x, y_left)
-        
+        output_lang = filtered_analysis.get('output_language', 'english')
         # SKILLS
         skills_data = filtered_analysis.get("umiejetnosci") or filtered_analysis.get("skills")
         y_skills_header = page2_start_y  # default, gdyby nie było skills
@@ -2409,31 +2531,39 @@ class CVAnalyzer:
             pdf.set_xy(col_left_x + 2, y_left)
             
             skill_cats = [
-                ('programowanie_skrypty', 'programming_scripting', 'Programming'),
-                ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks'),
-                ('mobile', 'mobile', 'Mobile'),
-                ('infrastruktura_devops', 'infrastructure_devops', 'Infrastructure'),
-                ('chmura', 'cloud', 'Cloud'),
-                ('bazy_kolejki', 'databases_messaging', 'Data'),
-                ('monitoring', 'monitoring', 'Monitoring'),
-                ('inne', 'other', 'Other'),
+                ('programowanie_skrypty', 'programming_scripting'),
+                ('frameworki_biblioteki', 'frameworks_libraries'),
+                ('mobile', 'mobile'),
+                ('infrastruktura_devops', 'infrastructure_devops'),
+                ('chmura', 'cloud'),
+                ('bazy_kolejki', 'databases_messaging'),
+                ('monitoring', 'monitoring'),
+                ('inne', 'other'),
             ]
+
             
-            for pl_key, en_key, label in skill_cats:
+            for pl_key, en_key in skill_cats:
                 skills_list = skills_data.get(pl_key) or skills_data.get(en_key)
                 if not skills_list:
                     continue
                 
+                # ✅ DODANO: Tłumaczenie nazwy kategorii
+                category_name = self.translate_skill_category(
+                    en_key, 
+                    'polish' if output_lang == 'polish' else 'english'
+                )
+                
                 skills_str = ", ".join(safe_text(s) for s in skills_list)
                 
-                # Label
-                add_bold_text_column(pdf, col_left_x + 2, f"{label}:", 10, col_left_width - 4)
+                # ✅ ZMIENIONO: Użyj przetłumaczonej nazwy
+                add_bold_text_column(pdf, col_left_x + 2, f"{category_name}:", 10, col_left_width - 4)
                 # Technologies
                 current_y = self._write_text_with_underline(
                     pdf, skills_str, col_left_x + 2, pdf.get_y(),
                     col_left_width - 4, 'Arsenal', 9, keywords, line_height=3.8
                 )
                 pdf.set_xy(col_left_x + 2, current_y + 1)
+
             
             y_left = pdf.get_y() + 2
         # TECH STACK
@@ -2465,27 +2595,32 @@ class CVAnalyzer:
                     tech_list = [safe_text(t) for t in tech_list if safe_text(t) and safe_text(t) != 'N/A'][:6]
                     
                     if tech_list:
+                        # ✅ TŁUMACZENIE "Main:" i "Exp:"
+                        main_label = "Główne:" if output_lang == 'polish' else "Main:"
+                        
                         pdf.set_xy(col_left_x + 2, y_left)
                         pdf.set_font('Arsenal', 'B', 7)
-                        pdf.cell(col_left_width - 4, 3, "Main:", ln=False)
+                        pdf.cell(col_left_width - 4, 3, main_label, ln=False)
                         
                         pdf.set_font('Arsenal', '', 7)
-                        pdf.set_xy(col_left_x + 18, y_left)  # Przesunięcie od "Main:"
+                        pdf.set_xy(col_left_x + 18, y_left)
                         pdf.multi_cell(col_left_width - 20, 3, ", ".join(tech_list), align='L')
                         y_left = pdf.get_y() + 1
-                
-                # 3. DOŚWIADCZENIE (experience level)
-                if years_exp:
-                    years_exp_str = safe_text(years_exp)
-                    # Wyciągnij tylko liczbę
-                    import re
-                    years_match = re.search(r'(\d+)', years_exp_str)
-                    if years_match:
-                        years_num = years_match.group(1)
-                        pdf.set_xy(col_left_x + 2, y_left)
-                        pdf.set_font('Arsenal', 'B', 7)
-                        pdf.cell(0, 3, f"Exp: {years_num}+ yrs", ln=True)
-                        y_left = pdf.get_y() + 1
+
+                    # 3. DOŚWIADCZENIE (experience level)
+                    if years_exp:
+                        years_exp_str = safe_text(years_exp)
+                        import re
+                        years_match = re.search(r'(\d+)', years_exp_str)
+                        if years_match:
+                            years_num = years_match.group(1)
+                            # ✅ TŁUMACZENIE "Exp:"
+                            exp_label = "Dośw:" if output_lang == 'polish' else "Exp:"
+                            
+                            pdf.set_xy(col_left_x + 2, y_left)
+                            pdf.set_font('Arsenal', 'B', 7)
+                            pdf.cell(0, 3, f"{exp_label} {years_num}+ lat" if output_lang == 'polish' else f"{exp_label} {years_num}+ yrs", ln=True)
+                            y_left = pdf.get_y() + 1
             
             # ✅ CASE 2: tech_summary jest STRING
             else:
@@ -2558,12 +2693,6 @@ class CVAnalyzer:
             )
             y_right = current_y + 3
 
-
-        # # WORK EXPERIENCE
-        # if template_mode == "one_to_one":
-        #     y_right = y_skills_header   # dokładnie ten sam Y
-        # else:
-        #     y_right = page2_start_y
 
         # WORK EXPERIENCE
         work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
@@ -2842,7 +2971,7 @@ class CVAnalyzer:
             logo_para.paragraph_format.space_after = Pt(0)
             logo_para.paragraph_format.left_indent = Inches(0.3)
 
-            logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png'
+            logo_path =r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #"/app/arsenal/Arsenal-Regular.ttf"# 
             try:
                 logo_run = logo_para.add_run()
                 logo_run.add_picture(logo_path, width=Inches(2.0))
@@ -2987,23 +3116,28 @@ class CVAnalyzer:
         
         skills_data = filtered_analysis.get("umiejetnosci") or filtered_analysis.get("skills")
         if skills_data:
+            # MAPA: (klucz_pl, klucz_en, LABEL_EN, LABEL_PL)
             skill_cats = [
-                ('programowanie_skrypty', 'programming_scripting', 'Programming'),
-                ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks'),
-                ('mobile', 'mobile', 'Mobile'),
-                ('infrastruktura_devops', 'infrastructure_devops', 'Infrastructure'),
-                ('chmura', 'cloud', 'Cloud'),
-                ('bazy_kolejki', 'databases_messaging', 'Data'),
-                ('monitoring', 'monitoring', 'Monitoring'),
-                ('inne', 'other', 'Other'),
+                ('programowanie_skrypty', 'programming_scripting', 'Programming', 'Programowanie'),
+                ('frameworki_biblioteki', 'frameworks_libraries', 'Frameworks', 'Frameworki'),
+                ('mobile', 'mobile', 'Mobile', 'Mobile'),
+                ('infrastruktura_devops', 'infrastructure_devops', 'Infrastructure', 'Infrastruktura'),
+                ('chmura', 'cloud', 'Cloud', 'Chmura'),
+                ('bazy_kolejki', 'databases_messaging', 'Data', 'Bazy danych'),
+                ('monitoring', 'monitoring', 'Monitoring', 'Monitoring'),
+                ('inne', 'other', 'Other', 'Inne'),
             ]
             
-            for pl_key, en_key, label in skill_cats:
+            # Pobierz język outputu
+            output_lang = filtered_analysis.get('output_language', 'english')
+            
+            for pl_key, en_key, label_en, label_pl in skill_cats:
                 skills_list = skills_data.get(pl_key) or skills_data.get(en_key)
                 if skills_list:
-                    skills_str = ', '.join([safe_text(s) for s in skills_list])
+                    # WYBIERZ LABEL według języka outputu
+                    label = label_pl if output_lang == 'polish' else label_en
                     
-
+                    skills_str = ', '.join([safe_text(s) for s in skills_list])
 
                     # Label - bold
                     p = left_cell.add_paragraph(f"{label}:")
