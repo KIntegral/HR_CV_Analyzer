@@ -28,6 +28,7 @@ from docx.oxml import OxmlElement
 # Dla Windows odkomentuj:
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
+logo_path = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png" #"/app/IS_New.png" #
 
 from ollama import Client
 ollama_host = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
@@ -176,7 +177,8 @@ class CVAnalyzer:
                 "CI/CD", "DevOps", "SRE", "Observability", "Infrastructure as Code"
             ]
         }
-                
+
+            
     def _add_paragraph_with_bold_keywords(self, cell, text, keywords, base_size=7, bold_base=False, space_before=0, space_after=0):
         """Add paragraph to DOCX cell with BOLD keywords"""
         p = cell.add_paragraph()
@@ -340,6 +342,101 @@ class CVAnalyzer:
         
         return 'polish' if polish_count > english_count else 'english'
     
+    def translate_work_descriptions(self, work_experience, target_lang):
+        """Translate work experience descriptions to target language"""
+        if not work_experience:
+            return work_experience
+        
+        for job in work_experience:
+            descriptions = job.get('description', [])
+            if not descriptions:
+                continue
+            
+            translated = []
+            for desc in descriptions:
+                if not desc or len(desc.strip()) < 5:
+                    translated.append(desc)
+                    continue
+                
+                try:
+                    if target_lang == "polish":
+                        prompt = f"""Translate this professional work description from English to Polish.
+    Return ONLY the Polish translation, nothing else. No prefixes, no explanations.
+
+    Text:
+    {desc}
+
+    Polish translation:"""
+                    else:
+                        prompt = f"""Translate this professional work description from Polish to English.
+    Return ONLY the English translation, nothing else. No prefixes, no explanations.
+
+    Text:
+    {desc}
+
+    English translation:"""
+                    
+                    response = ollama.chat(
+                        model=self.model_name,
+                        messages=[{'role': 'user', 'content': prompt}],
+                        options={'temperature': 0.1, 'num_predict': 500}  # ✅ Zwiększone z 300 na 500
+                    )
+                    
+                    translated_text = response['message']['content'].strip()
+                    
+                    # ✅ CZYSZCZENIE OUTPUTU Z LLM
+                    # 1. Usuń typowe prefiksy
+                    prefixes_to_remove = [
+                        "Polish translation:", "English translation:",
+                        "Translation:", "Polish:", "English:",
+                        "Here is the translation:", "Translated text:",
+                        "Tłumaczenie:", "Polskie tłumaczenie:", "Angielskie tłumaczenie:",
+                        "Oto tłumaczenie:", "Przetłumaczony tekst:"
+                    ]
+                    
+                    for prefix in prefixes_to_remove:
+                        if translated_text.lower().startswith(prefix.lower()):
+                            translated_text = translated_text[len(prefix):].strip()
+                            break
+                    
+                    # 2. Usuń cudzysłowy opakowujące cały tekst
+                    if translated_text.startswith('"') and translated_text.endswith('"'):
+                        translated_text = translated_text[1:-1].strip()
+                    if translated_text.startswith("'") and translated_text.endswith("'"):
+                        translated_text = translated_text[1:-1].strip()
+                    
+                    # 3. ✅ NAPRAW PODKREŚLNIKI - zamień na spacje
+                    translated_text = translated_text.replace('_', ' ')
+                    
+                    # 4. ✅ USUŃ POWTÓRZONE SPACJE
+                    import re
+                    translated_text = re.sub(r'\s+', ' ', translated_text)
+                    
+                    # 5. ✅ USUŃ DZIWNE TEKSTY W ŚRODKU (np. "Please note...")
+                    # Jeśli w tłumaczeniu pojawia się angielski tekst wyjaśniający
+                    cleanup_patterns = [
+                        r'\(Please note[^)]*\)',
+                        r'\(Note:[^)]*\)',
+                        r'\(Uwaga:[^)]*\)',
+                        r'\(Proszę zauważyć[^)]*\)'
+                    ]
+                    for pattern in cleanup_patterns:
+                        translated_text = re.sub(pattern, '', translated_text, flags=re.IGNORECASE)
+                    
+                    translated_text = translated_text.strip()
+                    
+                    translated.append(translated_text)
+                    print(f"✅ Translated: {desc[:50]}... → {translated_text[:50]}...")
+                    
+                except Exception as e:
+                    print(f"❌ Translation failed for {desc[:50]}... keeping original")
+                    translated.append(desc)
+            
+            job['description'] = translated
+        
+        return work_experience
+
+
     def analyze_cv_for_template(self, cv_text, client_requirements, custom_prompt="", output_language="auto"):
         """
         Analyze CV and generate structured template WITHOUT using Ollama for extraction.
@@ -360,6 +457,14 @@ class CVAnalyzer:
         # STEP 1: Extract work experience using direct parsing (NO OLLAMA)
         work_experience = self._extract_work_experience_details(cv_text)
 
+        # ✅ TŁUMACZENIE OPISÓW PRACY jeśli potrzeba
+        if final_language == 'polish' and cv_language == 'english':
+            print("🔄 Translating work descriptions from English to Polish...")
+            work_experience = self.translate_work_descriptions(work_experience, 'polish')
+        elif final_language == 'english' and cv_language == 'polish':
+            print("🔄 Translating work descriptions from Polish to English...")
+            work_experience = self.translate_work_descriptions(work_experience, 'english')
+
         # STEP 2: Extract education using direct parsing (NO OLLAMA)
         education = self._extract_education_details(cv_text)
 
@@ -369,6 +474,17 @@ class CVAnalyzer:
         languages_data = self.extract_languages(cv_text)
         certifications_data = self.extract_certifications(cv_text)
 
+        if final_language == 'polish' and cv_language == 'english':
+            print("🔄 Translating language names from English to Polish...")
+            for lang in languages_data:
+                original = lang.get('language', '')
+                lang['language'] = self.translate_language_name(original, 'polish')
+                
+        elif final_language == 'english' and cv_language == 'polish':
+            print("🔄 Translating language names from Polish to English...")
+            for lang in languages_data:
+                original = lang.get('language', '')
+                lang['language'] = self.translate_language_name(original, 'english')
         # STEP 4: Extract basic info using Ollama (name, email, phone only)
         basic_info_prompt = f"""Extract ONLY basic contact information from this CV:
 
@@ -699,45 +815,47 @@ class CVAnalyzer:
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def translate_text(self, text, target_language='polish'):
+    def translate_text(self, text, target_language="polish"):
         """
-        Translate text from English to Polish (or vice versa) using Ollama.
+        Translate text from English to Polish or vice versa using Ollama.
         
         Args:
             text: Text to translate (str or list of str)
-            target_language: 'polish' or 'english'
+            target_language: "polish" or "english"
         
         Returns:
             Translated text (same type as input - str or list)
         """
-        # Handle list input
         if isinstance(text, list):
-            return [self.translate_text(item, target_language) for item in text]
+            return [self.translate_text(item, target_language) for item in text]  # Handle list input
         
-        # Skip if already in target language or empty
         if not text or len(text.strip()) < 2:
-            return text
+            return text  # Skip if empty
         
         # Detect source language
         polish_chars = sum(1 for c in text if c in 'ąćęłńóśźżĄĆĘŁŃÓŚŹŻ')
         is_polish_source = polish_chars > 0
         
-        if target_language == 'polish' and is_polish_source:
+        if target_language == "polish" and is_polish_source:
             return text  # Already Polish
-        elif target_language == 'english' and not is_polish_source:
+        elif target_language == "english" and not is_polish_source:
             return text  # Already English
         
-        # Translate
-        if target_language == 'polish':
-            prompt = f"""Translate this text from English to Polish. Return ONLY the translation, no explanations.
+        # Build prompt
+        if target_language == "polish":
+            prompt = f"""Translate this text from English to Polish. 
+    Return ONLY the Polish translation, nothing else.
 
-    English: {text}
-    Polish:"""
+    Text to translate: {text}
+
+    Polish translation:"""
         else:
-            prompt = f"""Translate this text from Polish to English. Return ONLY the translation, no explanations.
+            prompt = f"""Translate this text from Polish to English. 
+    Return ONLY the English translation, nothing else.
 
-    Polish: {text}
-    English:"""
+    Text to translate: {text}
+
+    English translation:"""
         
         try:
             response = ollama.chat(
@@ -746,12 +864,31 @@ class CVAnalyzer:
                 options={'temperature': 0.1, 'num_predict': 100}
             )
             translated = response['message']['content'].strip()
-            # Clean up any quotes or extra formatting
-            translated = translated.strip('"\'')
+            
+            # ✅ CLEAN UP - usuń typowe prefiksy z LLM
+            prefixes_to_remove = [
+                "Polish translation:", "English translation:",
+                "Polish:", "English:", "Translation:", "Here is the translation:",
+                "Tłumaczenie:", "Polskie tłumaczenie:", "Angielskie tłumaczenie:"
+            ]
+            
+            for prefix in prefixes_to_remove:
+                if translated.lower().startswith(prefix.lower()):
+                    translated = translated[len(prefix):].strip()
+                    break
+            
+            # Usuń cudzysłowy jeśli cały tekst jest w nich opakowany
+            if translated.startswith('"') and translated.endswith('"'):
+                translated = translated[1:-1].strip()
+            if translated.startswith("'") and translated.endswith("'"):
+                translated = translated[1:-1].strip()
+            
             return translated
+            
         except Exception as e:
-            print(f"❌ Translation error: {e}")
+            print(f"Translation error: {e}")
             return text  # Return original if translation fails
+
 
     def apply_template_filters(self, analysis, template_type='full'):
         """Apply template filters - IMPROVED"""
@@ -2296,6 +2433,68 @@ class CVAnalyzer:
         }
         
         return translations.get(category_key, {}).get(target_language, category_key)  
+    
+    def translate_language_name(self, language_name, target_lang):
+        """
+        Dynamically translate language name using Ollama.
+        
+        Args:
+            language_name: Language name in any form ("English", "angielski", etc.)
+            target_lang: "polish" or "english" (REQUIRED)
+        
+        Returns:
+            Translated language name
+        """
+        if not language_name or len(language_name.strip()) < 2:
+            return language_name
+        
+        try:
+            if target_lang == "polish":
+                prompt = f"""Translate this language name to Polish. Return ONLY the Polish name, one word.
+
+    Language: {language_name}
+
+    Polish name:"""
+            else:
+                prompt = f"""Translate this language name to English. Return ONLY the English name, one word.
+
+    Language: {language_name}
+
+    English name:"""
+            
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[{'role': 'user', 'content': prompt}],
+                options={'temperature': 0.1, 'num_predict': 50}
+            )
+            
+            translated = response['message']['content'].strip()
+            
+            # ✅ CLEAN UP - usuń prefiksy
+            prefixes_to_remove = [
+                "Polish name:", "English name:", "Polish:", "English:",
+                "Translation:", "Nazwa polska:", "Angielska nazwa:"
+            ]
+            
+            for prefix in prefixes_to_remove:
+                if translated.lower().startswith(prefix.lower()):
+                    translated = translated[len(prefix):].strip()
+                    break
+            
+            # Usuń cudzysłowy
+            translated = translated.strip('"\'')
+            
+            # Weź tylko pierwsze słowo (nazwa języka)
+            translated = translated.split()[0].strip('.,!?')
+            
+            print(f"Language: {language_name} → {translated}")
+            return translated
+            
+        except Exception as e:
+            print(f"Language translation failed for {language_name}, keeping original")
+            return language_name
+
+        
     def generate_pdf_output(self, analysis, template_type='full', language=None, client_requirements=''):
         """Generate PDF with FPDF2 - Arsenal font - 2 pages layout"""
         import re
@@ -2307,8 +2506,8 @@ class CVAnalyzer:
             language = filtered_analysis.get('output_language', 'en')
         
         # Font paths
-        arsenal_regular =  r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'# "/app/arsenal/Arsenal-Regular.ttf" 
-        arsenal_bold =r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf' #"/app/arsenal/Arsenal-Bold.ttf" 
+        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#"/app/arsenal/Arsenal-Regular.ttf" # 
+        arsenal_bold =r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf' #"/app/arsenal/Arsenal-Bold.ttf" #
         
         if template_mode == 'one_to_one':
             keywords = []
@@ -2322,7 +2521,30 @@ class CVAnalyzer:
             if text is None or text == '':
                 return default
             return str(text)
+        
+        def add_section_header(pdf, x, y, title, max_width):
+            """
+            Rysuje nagłówek sekcji + cienką linię pod spodem.
+            Zwraca nową pozycję Y tuż pod linią.
+            """
+            # ustaw pozycję i font
+            pdf.set_xy(x, y)
+            pdf.set_font("Arsenal", "B", 10)
 
+            # tekst nagłówka (jedna linia / multi_cell jeśli długi)
+            pdf.multi_cell(max_width, 5, title, align="L")
+
+            # Y tuż pod tekstem
+            y_after_text = pdf.get_y()
+
+            # cienka linia pod nagłówkiem
+            pdf.set_draw_color(76, 76, 76)
+            pdf.set_line_width(0.3)
+            pdf.line(x, y_after_text, x + max_width - 2, y_after_text)
+            pdf.set_draw_color(0, 0, 0)
+
+            # mały odstęp pod linią
+            return y_after_text + 3
         def get_section_name(en_name):
             """Polish translation"""
 
@@ -2378,7 +2600,7 @@ class CVAnalyzer:
             pdf.rect(0, 0, 210, 40, 'F')
             
             # Logo
-            logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #"/app/IS_New.png" 
+            
             try:
                 pdf.image(logo_path, x=5, y=9, w=50)
             except Exception as e:
@@ -2434,7 +2656,7 @@ class CVAnalyzer:
                 
                 pdf.set_y(y_before + 3)
                 pdf.set_x(12.7)
-                pdf.set_font('Arsenal', '', 11)
+                pdf.set_font('Arsenal', '', 13)
                 
                 for highlight in highlights:
                     highlight_text = safe_text(highlight).strip()
@@ -2450,86 +2672,77 @@ class CVAnalyzer:
         # ===== PAGE 2: TWO COLUMNS LAYOUT =====
         pdf.add_page()
         pdf.set_margins(left=12.7, top=0, right=12.7)
-        
+
         # Blue header (repeat on page 2)
         pdf.set_fill_color(50, 130, 180)
         pdf.rect(0, 0, 210, 40, 'F')
-        
+
         # Logo, Name, Title (same as page 1)
         try:
             pdf.image(logo_path, x=5, y=9, w=50)
         except Exception as e:
             print(f"Logo error: {e}")
-        
+
         pdf.set_font('Arsenal', 'B', 24)
         pdf.set_text_color(255, 255, 255)
         pdf.set_xy(0, 12)
         pdf.cell(0, 8, candidate_name, align='C')
-        
+
         pdf.set_font('Arsenal', '', 12)
         pdf.set_xy(0, 22)
         pdf.cell(0, 8, candidate_title, align='C')
-        
+
         pdf.set_text_color(0, 0, 0)
 
-        # ✅ FIXED COLUMN SETUP
-        page2_start_y = 50
+        # STAŁE POZYCJE KOLUMN NA STRONIE 2
+        page_y = 50.0
         col_left_x = 12.7
-        col_right_x = 104      # Fixed position
-        col_left_width = 88    # Equal widths
-        col_right_width = 88
-        y_left = page2_start_y
-        y_right = page2_start_y
-
-        def add_section_header(pdf, x, title, max_width):
-            """Add section header with underline - FIXED"""
-            pdf.set_xy(x, pdf.get_y())
-            pdf.set_font('Arsenal', 'B', 10)
-            pdf.multi_cell(max_width, 5, title)
+        col_right_x = 102.0      # ← Zmniejszone z 104.0
+        col_left_w = 84.0        # ← Zmniejszone z 88.0  
+        col_right_w = 84.0  
+        
+        def truncate_text(text, max_width, font_name, font_size, pdf):
+            """Obcina tekst do max_width lub dodaje page break"""
+            words = text.split()
+            current_line = ""
+            lines = []
             
-            pdf.set_draw_color(76, 76, 76)
-            pdf.set_line_width(0.3)
-            y_pos = pdf.get_y()
-            pdf.line(x, y_pos, x + max_width - 2, y_pos)
-            pdf.set_draw_color(0, 0, 0)
+            for word in words:
+                test_line = f"{current_line} {word}".strip() if current_line else word
+                pdf.set_font(font_name, '', font_size)
+                pdf.set_xy(0, 0)  # test position
+                w = pdf.get_string_width(test_line)
+                if w > max_width - 8:  # 8mm margines bezpieczeństwa
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+                else:
+                    current_line = test_line
             
-            return pdf.get_y() + 3
-
-
-
-        def add_text_column(pdf, x, text, font_size=9, max_width=88):
-            pdf.set_xy(x, pdf.get_y())
-            pdf.set_font('Arsenal', '', font_size)
-            pdf.multi_cell(max_width, 4, text, align='L')
-
-        def add_bold_text_column(pdf, x, text, font_size=9, max_width=88):
-            pdf.set_xy(x, pdf.get_y())
-            pdf.set_font('Arsenal', 'B', font_size)
-            pdf.multi_cell(max_width, 4, text, align='L')
-
-        # ═════ LEFT COLUMN: SKILLS, TECH STACK, LANGUAGES, CERTIFICATIONS ═════
-        pdf.set_xy(col_left_x, y_left)
+            if current_line:
+                lines.append(current_line)
+            return lines
+        # --- LEWA KOLUMNA: SKILLS, TECH, LANGUAGES, CERTS (bez page breaków) ---
         output_lang = filtered_analysis.get('output_language', 'english')
-        # SKILLS
         skills_data = filtered_analysis.get("umiejetnosci") or filtered_analysis.get("skills")
-        y_skills_header = page2_start_y  # default, gdyby nie było skills
+
+        pdf.set_xy(col_left_x, page_y)
+        y_left = page_y
 
         if skills_data:
-            # ustaw ręcznie Y nagłówka SKILLS
-            pdf.set_xy(col_left_x, page2_start_y)
+            # nagłówek SKILLS dokładnie w page_y
+            pdf.set_xy(col_left_x, page_y)
             pdf.set_font('Arsenal', 'B', 10)
-            pdf.cell(col_left_width, 5, get_section_name('S K I L L S'), ln=True)
-            # linia pod nagłówkiem
+            pdf.cell(col_left_w, 5, get_section_name('S K I L L S'), ln=True)
             y_line = pdf.get_y()
             pdf.set_draw_color(76, 76, 76)
             pdf.set_line_width(0.3)
-            pdf.line(col_left_x, y_line, col_left_x + col_left_width - 2, y_line)
+            pdf.line(col_left_x, y_line, col_left_x + col_left_w - 2, y_line)
             pdf.set_draw_color(0, 0, 0)
 
-            y_skills_header = page2_start_y   # to jest Y nagłówka
-            y_left = y_line + 3               # dalszy tekst w kolumnie
+            y_left = y_line + 3
             pdf.set_xy(col_left_x + 2, y_left)
-            
+
             skill_cats = [
                 ('programowanie_skrypty', 'programming_scripting'),
                 ('frameworki_biblioteki', 'frameworks_libraries'),
@@ -2541,247 +2754,254 @@ class CVAnalyzer:
                 ('inne', 'other'),
             ]
 
-            
             for pl_key, en_key in skill_cats:
                 skills_list = skills_data.get(pl_key) or skills_data.get(en_key)
                 if not skills_list:
                     continue
-                
-                # ✅ DODANO: Tłumaczenie nazwy kategorii
+
                 category_name = self.translate_skill_category(
-                    en_key, 
+                    en_key,
                     'polish' if output_lang == 'polish' else 'english'
                 )
-                
                 skills_str = ", ".join(safe_text(s) for s in skills_list)
-                
-                # ✅ ZMIENIONO: Użyj przetłumaczonej nazwy
-                add_bold_text_column(pdf, col_left_x + 2, f"{category_name}:", 10, col_left_width - 4)
-                # Technologies
-                current_y = self._write_text_with_underline(
-                    pdf, skills_str, col_left_x + 2, pdf.get_y(),
-                    col_left_width - 4, 'Arsenal', 9, keywords, line_height=3.8
-                )
-                pdf.set_xy(col_left_x + 2, current_y + 1)
 
-            
-            y_left = pdf.get_y() + 2
+                pdf.set_xy(col_left_x + 2, y_left)
+                pdf.set_font('Arsenal', 'B', 10)
+                pdf.multi_cell(col_left_w - 4, 4, f"{category_name}:", align='L')
+                y_left = pdf.get_y()
+
+                current_y = self._write_text_with_underline(
+                    pdf, skills_str, col_left_x + 2, y_left,
+                    col_left_w - 4, 'Arsenal', 9, keywords, line_height=3.8
+                )
+                y_left = current_y + 2
+                pdf.set_xy(col_left_x + 2, y_left)
+
         # TECH STACK
         tech_summary = filtered_analysis.get("podsumowanie_technologii") or filtered_analysis.get("tech_stack_summary")
         if tech_summary:
             pdf.set_xy(col_left_x, y_left)
-            y_left = add_section_header(pdf, col_left_x, get_section_name('T E C H  S T A C K'), col_left_width)
+            y_left = add_section_header(pdf, col_left_x, y_left, get_section_name('T E C H  S T A C K'), col_left_w)
             pdf.set_xy(col_left_x + 2, y_left)
-            
-            # ✅ CASE 1: tech_summary jest DICT (preferowane)
+
             if isinstance(tech_summary, dict):
                 description = tech_summary.get('opis') or tech_summary.get('description', '')
                 primary_tech = tech_summary.get('glownetechnologie') or tech_summary.get('primarytechnologies', [])
                 years_exp = tech_summary.get('latadoswiadczenia') or tech_summary.get('yearsofexperience', '')
-                
-                # 1. GŁÓWNY OPIS (summary głównych technologii)
+
                 if description:
-                    # Skróć do maksymalnie 2 linii
-                    description_short = safe_text(description)[:120]  # Skróć do 120 znaków
-                    pdf.set_xy(col_left_x + 2, y_left)
-                    pdf.set_font('Arsenal', '', 8)
-                    pdf.multi_cell(col_left_width - 4, 3.5, description_short, align='L')
+                    description_short = safe_text(description)[:120]
+                    pdf.set_font('Arsenal', '', 9)
+                    pdf.multi_cell(col_left_w - 4, 3.5, description_short, align='L')
                     y_left = pdf.get_y() + 1
-                
-                # 2. GŁÓWNE TECHNOLOGIE (top 6)
+
                 if primary_tech:
                     tech_list = primary_tech if isinstance(primary_tech, list) else [primary_tech]
-                    # Filtruj puste i konwertuj na string
                     tech_list = [safe_text(t) for t in tech_list if safe_text(t) and safe_text(t) != 'N/A'][:6]
-                    
                     if tech_list:
-                        # ✅ TŁUMACZENIE "Main:" i "Exp:"
                         main_label = "Główne:" if output_lang == 'polish' else "Main:"
-                        
                         pdf.set_xy(col_left_x + 2, y_left)
                         pdf.set_font('Arsenal', 'B', 7)
-                        pdf.cell(col_left_width - 4, 3, main_label, ln=False)
-                        
-                        pdf.set_font('Arsenal', '', 7)
-                        pdf.set_xy(col_left_x + 18, y_left)
-                        pdf.multi_cell(col_left_width - 20, 3, ", ".join(tech_list), align='L')
+                        pdf.cell(15, 3, main_label, ln=False)
+                        pdf.set_font('Arsenal', '', 9)
+                        pdf.set_xy(col_left_x + 17, y_left)
+                        pdf.multi_cell(col_left_w - 19, 3, ", ".join(tech_list), align='L')
                         y_left = pdf.get_y() + 1
 
-                    # 3. DOŚWIADCZENIE (experience level)
-                    if years_exp:
-                        years_exp_str = safe_text(years_exp)
-                        import re
-                        years_match = re.search(r'(\d+)', years_exp_str)
-                        if years_match:
-                            years_num = years_match.group(1)
-                            # ✅ TŁUMACZENIE "Exp:"
-                            exp_label = "Dośw:" if output_lang == 'polish' else "Exp:"
-                            
-                            pdf.set_xy(col_left_x + 2, y_left)
-                            pdf.set_font('Arsenal', 'B', 7)
-                            pdf.cell(0, 3, f"{exp_label} {years_num}+ lat" if output_lang == 'polish' else f"{exp_label} {years_num}+ yrs", ln=True)
-                            y_left = pdf.get_y() + 1
-            
-            # ✅ CASE 2: tech_summary jest STRING
+                if years_exp:
+                    years_exp_str = safe_text(years_exp)
+                    m = re.search(r'(\d+)', years_exp_str)
+                    if m:
+                        years_num = m.group(1)
+                        exp_label = "Dośw:" if output_lang == 'polish' else "Exp:"
+                        pdf.set_xy(col_left_x + 2, y_left)
+                        pdf.set_font('Arsenal', 'B', 9)
+                        pdf.cell(0, 3,
+                            f"{exp_label} {years_num}+ lat" if output_lang == 'polish'
+                            else f"{exp_label} {years_num}+ yrs",
+                            ln=True
+                        )
+                        y_left = pdf.get_y() + 1
             else:
-                tech_text = safe_text(tech_summary)[:150]  # Skróć do 150 znaków
-                pdf.set_xy(col_left_x + 2, y_left)
-                pdf.set_font('Arsenal', '', 8)
-                pdf.multi_cell(col_left_width - 4, 3.5, tech_text, align='L')
+                tech_text = safe_text(tech_summary)[:150]
+                pdf.set_font('Arsenal', '', 9)
+                pdf.multi_cell(col_left_w - 4, 3.5, tech_text, align='L')
                 y_left = pdf.get_y() + 1
-            
+
             y_left = pdf.get_y() + 2
 
+
         # LANGUAGES
+        tech_end_y = y_left          # tu skończyły się technologie
+        languages_start_y = tech_end_y + 4
+        certs_start_y = languages_start_y + 22
+
         languages_data = filtered_analysis.get("języki_obce") or filtered_analysis.get("languages", [])
         if languages_data:
             pdf.set_xy(col_left_x, y_left)
-            y_left = add_section_header(pdf, col_left_x, get_section_name("L A N G U A G E S"), col_left_width)
+            y_left = add_section_header(pdf, col_left_x, y_left, get_section_name("L A N G U A G E S"), col_left_w)
             pdf.set_xy(col_left_x + 2, y_left)
-            
+
+            max_rows = 4
+            rows_used = 0
             for lang in languages_data:
-                language = safe_text(lang.get("język") or lang.get("language"), "")
+                if rows_used >= max_rows:
+                    break
+                language = safe_text(lang.get("język") or lang.get("language"), "")[:30]
                 level = safe_text(lang.get("poziom") or lang.get("level"), "")
                 if language:
                     text = f"{language}: {level}" if level else language
-                    pdf.set_xy(col_left_x + 2, pdf.get_y())  # ← DODANE: Ustaw X przed multi_cell
                     pdf.set_font("Arsenal", "", 9)
-                    pdf.multi_cell(col_left_width - 4, 4, text, align="L")
-                    y_left = pdf.get_y() + 1  # ← DODANE: Aktualizuj y_left po KAŻDYM języku
-            y_left = pdf.get_y() + 2  # Final spacing
+                    pdf.multi_cell(col_left_w - 4, 4, text, align="L")
+                    y_left = pdf.get_y() + 1
+                    pdf.set_xy(col_left_x + 2, y_left)
+                    rows_used += 1
 
+            y_left = pdf.get_y() + 2
 
-        # CERTIFICATIONS
+        # CERTIFICATIONS (ciąg dalszy flowa)
         certs_and_courses = (
-            filtered_analysis.get("certyfikaty_i_kursy") or 
+            filtered_analysis.get("certyfikaty_i_kursy") or
             filtered_analysis.get("certifications_and_courses") or
-            (filtered_analysis.get("certyfikaty", []) or []) + (filtered_analysis.get("certifications", []) or [])
+            (filtered_analysis.get("certyfikaty", []) or []) +
+            (filtered_analysis.get("certifications", []) or [])
         )
         if certs_and_courses:
             pdf.set_xy(col_left_x, y_left)
-            y_left = add_section_header(pdf, col_left_x, get_section_name('C E R T I F I C A T I O N S'), col_left_width)
+            y_left = add_section_header(
+                pdf, col_left_x, y_left, get_section_name('C E R T I F I C A T I O N S'), col_left_w
+            )
             pdf.set_xy(col_left_x + 2, y_left)
-            
+
+            max_rows = 3
+            rows_used = 0
             for item in certs_and_courses:
-                item_name = safe_text(item.get('nazwa') or item.get('name', ''))
-                issuer = safe_text(item.get('wystawca') or item.get('issuer', ''))
+                if rows_used >= max_rows:
+                    break
+                item_name = safe_text(item.get('nazwa') or item.get('name', ''))[:40]
+                issuer = safe_text(item.get('wystawca') or item.get('issuer', ''))[:40]
                 if item_name:
-                    add_bold_text_column(pdf, col_left_x + 2, item_name, 9, col_left_width - 4)
+                    pdf.set_font('Arsenal', 'B', 9)
+                    pdf.multi_cell(col_left_w - 4, 4, item_name, align='L')
+                    y_left = pdf.get_y()
                     if issuer and issuer != 'Not specified':
-                        add_text_column(pdf, col_left_x + 2, issuer, 9, col_left_width - 4)
+                        pdf.set_font('Arsenal', '', 9)
+                        pdf.multi_cell(col_left_w - 4, 3.5, issuer, align='L')
+                        y_left = pdf.get_y()
+                    y_left += 1
+                    pdf.set_xy(col_left_x + 2, y_left)
+
             y_left = pdf.get_y() + 2
 
-        # ═════ RIGHT COLUMN - SYNCHRONIZED START ═════
-        # dla 1:1 start prawej kolumny wyrównany do nagłówka SKILLS
-        if template_mode == "one_to_one" and y_skills_header is not None:
-            y_right = y_skills_header
-        else:
-            y_right = page2_start_y
 
+        # --- PRAWA KOLUMNA: start DOKŁADNIE w tym samym Y ---
+        y_right = page_y
         pdf.set_xy(col_right_x, y_right)
 
-        # PROFILE SUMMARY (drukowane tylko w trybach innych niż 1:1)
+        # PROFILE SUMMARY
         profile_summary = filtered_analysis.get('podsumowanie_profilu') or filtered_analysis.get('profile_summary')
-        if template_mode != "one_to_one" and profile_summary and profile_summary not in ["NA", "Nie podano w CV", "not provided", ""]:
-            y_right = add_section_header(pdf, col_right_x, get_section_name("P R O F I L E  S U M M A R Y"), col_right_width)
-            pdf.set_xy(col_right_x + 2, y_right)
-
-            profile_text = safe_text(profile_summary).replace('•', '').strip()
-            current_y = self._write_text_with_underline(
-                pdf, profile_text, col_right_x + 2, pdf.get_y(),
-                col_right_width - 4, 'Arsenal', 9, keywords, line_height=4
+        if template_mode != "onetoone" and profile_summary and profile_summary not in ("NA", "Nie podano w CV", "not provided", ""):
+            y_right = add_section_header(
+                pdf, col_right_x, y_right,
+                get_section_name("P R O F I L E  S U M M A R Y"),
+                col_right_w,
             )
-            y_right = current_y + 3
+            profile_text = safe_text(profile_summary).replace('•', '').strip()
+            pdf.set_xy(col_right_x + 2, y_right)
+            currenty = self._write_text_with_underline(
+                pdf, profile_text, col_right_x + 2, pdf.get_y(),
+                col_right_w - 4, "Arsenal", 9, keywords, line_height=4
+            )
+            y_right = currenty + 3
 
-
-        # WORK EXPERIENCE
+        # WORK EXPERIENCE (bez żadnego wpływu na lewą kolumnę)
         work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
         if work_exp_data:
             pdf.set_xy(col_right_x, y_right)
-            # nagłówek też rysowany ręcznie, bez multi_cell
             pdf.set_font('Arsenal', 'B', 10)
-            pdf.cell(col_right_width, 5, get_section_name("W O R K  E X P E R I E N C E"), ln=True)
+            pdf.cell(col_right_w, 5, get_section_name("W O R K  E X P E R I E N C E"), ln=True)
             y_line = pdf.get_y()
             pdf.set_draw_color(76, 76, 76)
             pdf.set_line_width(0.3)
-            pdf.line(col_right_x, y_line, col_right_x + col_right_width - 2, y_line)
+            pdf.line(col_right_x, y_line, col_right_x + col_right_w - 2, y_line)
             pdf.set_draw_color(0, 0, 0)
 
             y_right = y_line + 3
             pdf.set_xy(col_right_x + 2, y_right)
-            
+
             for idx, exp in enumerate(work_exp_data):
                 if idx > 0:
-                    y_right += 3
-                
+                    y_right += 2  # ← Mniejszy odstęp
+
                 period = safe_text(exp.get("okres") or exp.get("period"), "")
-                company = safe_text(exp.get("firma") or exp.get("company"), "")
-                position = safe_text(exp.get("stanowisko") or exp.get("position"), "")
+                company = safe_text(exp.get("firma") or exp.get("company"), "")[:30]  # ← OGRANICZENIE!
+                position = safe_text(exp.get("stanowisko") or exp.get("position"), "")[:35]  # ← OGRANICZENIE!
                 achievements = exp.get("kluczowe_osiagniecia") or exp.get("key_achievements") or []
                 technologies = exp.get("technologie") or exp.get("technologies") or []
-                
-                # PERIOD
+
+                # Period
                 if period not in ("", "YYYY - YYYY", "Not specified", "NA"):
                     pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font("Arsenal", "B", 8)
                     pdf.set_text_color(100, 100, 100)
-                    pdf.cell(0, 4, period, ln=True)
+                    pdf.cell(0, 4, period[:25], ln=True)  # ← OGRANICZENIE!
                     pdf.set_text_color(0, 0, 0)
                     y_right = pdf.get_y()
-                
-                # POSITION
-                if position not in ("", "NA", "Not specified"):
+
+                # Position
+                if position:
                     pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font("Arsenal", "B", 9)
-                    pdf.multi_cell(col_right_width - 4, 4, position, align="L")
+                    pdf.multi_cell(col_right_w - 6, 4, position, align="L")  # ← -6
                     y_right = pdf.get_y()
-                
-                # COMPANY
-                if company not in ("", "NA", "Not specified"):
+
+                # Company
+                if company:
                     pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font("Arsenal", "B", 8)
-                    pdf.multi_cell(col_right_width - 4, 4, company, align="L")
+                    pdf.multi_cell(col_right_w - 6, 4, company, align="L")  # ← -6
                     y_right = pdf.get_y()
-                
-                # ACHIEVEMENTS
+
+                # Achievements
                 if achievements and isinstance(achievements, list):
-                    pdf.set_font("Arsenal", "", 9)
-                    for ach in achievements:
-                        bullet_text = safe_text(ach, "").strip()
-                        if bullet_text and len(bullet_text) > 3:
+                    pdf.set_font('Arsenal', '', 9)
+                    for ach in achievements[:3]:  # ← MAX 3 na pozycję
+                        bullet_text = safe_text(ach, '').strip()[:80]  # ← OGRANICZENIE!
+                        if bullet_text:
                             pdf.set_xy(col_right_x + 4, y_right)
-                            pdf.multi_cell(col_right_width - 6, 4, f"• {bullet_text}", align="L")
+                            pdf.multi_cell(col_right_w - 8, 4, f"• {bullet_text}", align='L')  # ← -8
                             y_right = pdf.get_y()
-                
-                # TECH
+
+                # Technologies
                 if technologies:
                     tech_list = technologies if isinstance(technologies, list) else [technologies]
-                    tech_str = ", ".join([safe_text(t, "") for t in tech_list if safe_text(t, "")])
+                    tech_list = [safe_text(t, "")[:15] for t in tech_list if safe_text(t, "")][:5]  # ← OGRANICZENIE!
+                    tech_str = ", ".join(tech_list)
                     if tech_str:
                         pdf.set_xy(col_right_x + 4, y_right)
-                        pdf.set_font("Arsenal", "", 9)
+                        pdf.set_font("Arsenal", "", 8)  # ← Mniejszy font
                         pdf.set_text_color(80, 80, 80)
-                        pdf.multi_cell(col_right_width - 6, 3.5, f"Tech: {tech_str}", align="L")
+                        pdf.multi_cell(col_right_w - 8, 3.5, f"Tech: {tech_str}", align="L")  # ← -8
                         pdf.set_text_color(0, 0, 0)
                         y_right = pdf.get_y()
-            
-            y_right += 3
+                y_right += 2
 
-        # EDUCATION
+        # EDUCATION – prawa kolumna, bez page breaków
         education_data = filtered_analysis.get('wyksztalcenie') or filtered_analysis.get('education', [])
         if education_data:
             pdf.set_xy(col_right_x, y_right)
-            y_right = add_section_header(pdf, col_right_x, get_section_name('E D U C A T I O N'), col_right_width)
+            y_right = add_section_header(
+                pdf, col_right_x, y_right, get_section_name('E D U C A T I O N'), col_right_w
+            )
             pdf.set_xy(col_right_x + 2, y_right)
             y_right += 1
-            
+
             for edu in education_data:
+                period = safe_text(edu.get('okres') or edu.get('period', ''))
                 institution = safe_text(edu.get('uczelnia') or edu.get('institution', ''))
                 degree = safe_text(edu.get('stopien') or edu.get('degree', ''))
                 field = safe_text(edu.get('kierunek') or edu.get('field_of_study') or edu.get('field', ''))
-                period = safe_text(edu.get('okres') or edu.get('period', ''))
-                
-                # Period
+
                 if period and period not in ['YYYY - YYYY', 'Not specified', '', 'N/A']:
                     pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font('Arsenal', 'B', 8)
@@ -2789,22 +3009,20 @@ class CVAnalyzer:
                     pdf.cell(0, 4, period, ln=True)
                     pdf.set_text_color(0, 0, 0)
                     y_right = pdf.get_y()
-                
-                # Field + Degree
+
                 if field or degree:
                     text_fd = f"{field}, {degree}" if field and degree else (field or degree)
                     pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font('Arsenal', 'B', 8)
-                    pdf.multi_cell(col_right_width - 4, 4, text_fd, align='L')
+                    pdf.multi_cell(col_right_w - 4, 4, text_fd, align='L')
                     y_right = pdf.get_y()
-                
-                # Institution
-                if institution and institution not in ["Nazwa uczelni", "Not specified", "", "NA"]:
+
+                if institution and institution not in ("Nazwa uczelni", "Not specified", "", "NA"):
                     pdf.set_xy(col_right_x + 2, y_right)
                     pdf.set_font('Arsenal', '', 9)
-                    pdf.multi_cell(col_right_width - 4, 4, institution, align='L')
+                    pdf.multi_cell(col_right_w - 4, 4, institution, align='L')
                     y_right = pdf.get_y()
-                
+
                 y_right += 2
 
         # Save to buffer
@@ -2971,7 +3189,7 @@ class CVAnalyzer:
             logo_para.paragraph_format.space_after = Pt(0)
             logo_para.paragraph_format.left_indent = Inches(0.3)
 
-            logo_path =r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #"/app/arsenal/Arsenal-Regular.ttf"# 
+            logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #"/app/arsenal/Arsenal-Regular.ttf"# 
             try:
                 logo_run = logo_para.add_run()
                 logo_run.add_picture(logo_path, width=Inches(2.0))

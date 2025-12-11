@@ -354,12 +354,12 @@ with col1:
             st.rerun()  # Wymusza odświeżenie UI
         
         st.success(f"✅ {t['file_uploaded']}: {uploaded_file.name}")
-        file_details = {
-            t['filename']: uploaded_file.name,
-            t['filetype']: uploaded_file.type,
-            t['filesize']: f"{uploaded_file.size / 1024:.2f} KB"
-        }
-        st.json(file_details)
+        # file_details = {
+        #     t['filename']: uploaded_file.name,
+        #     t['filetype']: uploaded_file.type,
+        #     t['filesize']: f"{uploaded_file.size / 1024:.2f} KB"
+        # }
+        # st.json(file_details)
 
 with col2:
     st.markdown(f'<div class="section-header">{t["client_req"]}</div>', unsafe_allow_html=True)
@@ -703,22 +703,29 @@ with col_download:
         analyzer = CVAnalyzer(model_name=model_name)
         
         if output_format == "PDF":
-            pdf_language = 'pl' if 'Polski' in st.session_state.get('language_choice', 'English') else 'en'
-            
-            pdf_buffer = analyzer.generate_pdf_output(
+            pdflanguage = "pl" if "Polski" in st.session_state.get('language_choice', "English") else "en"
+            pdfbuffer = analyzer.generate_pdf_output(
                 st.session_state.analysis_result,
                 template_type=template_type,
-                language=pdf_language,
+                language=pdflanguage,
                 client_requirements=client_requirements
             )
             
-            st.download_button(
-                label=f"📄 {t['download_pdf']}",
-                data=pdf_buffer,
-                file_name=f"{safe_filename}.pdf",  # ← UŻYJ CUSTOM NAZWY
-                mime="application/pdf",
-                use_container_width=True
-            )
+            # ✅ DODAJ WALIDACJĘ (tak jak jest dla DOCX)
+            if pdfbuffer and isinstance(pdfbuffer, (BytesIO, bytes)):
+                # Jeśli to bytes, owinąć w BytesIO
+                if isinstance(pdfbuffer, bytes):
+                    pdfbuffer = BytesIO(pdfbuffer)
+                    
+                st.download_button(
+                    label=f"📥 {t['download_pdf']}",
+                    data=pdfbuffer,
+                    file_name=f"{safe_filename}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            else:
+                st.error("❌ " + ("Błąd generowania PDF" if ui_language == 'pl' else "PDF generation failed"))
             
         elif output_format == "DOCX":
             lang_map = {'auto': 'auto', 'pl': 'polish', 'en': 'english'}
