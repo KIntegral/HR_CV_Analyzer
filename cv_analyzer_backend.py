@@ -2752,20 +2752,27 @@ class CVAnalyzer:
         pdf.set_xy(col_right_x, y_right)
 
         # PROFILE SUMMARY
-        profile_summary = filtered_analysis.get('podsumowanie_profilu') or filtered_analysis.get('profile_summary')
-        if template_mode != "onetoone" and profile_summary and profile_summary not in ("NA", "Nie podano w CV", "not provided", ""):
-            y_right = add_section_header(
-                pdf, col_right_x, y_right,
-                get_section_name("P R O F I L E  S U M M A R Y"),
-                col_right_w,
-            )
-            profile_text = safe_text(profile_summary).replace('•', '').strip()
-            pdf.set_xy(col_right_x + 2, y_right)
-            currenty = self._write_text_with_underline(
-                pdf, profile_text, col_right_x + 2, pdf.get_y(),
-                col_right_w - 4, "Arsenal", 9, keywords, line_height=4
-            )
-            y_right = currenty + 3
+        # ✅ ZMIANA: Blokujemy generowanie tej sekcji całkowicie w trybie one_to_one
+        if template_mode != 'one_to_one':
+            profile_summary = filtered_analysis.get('podsumowanie_profilu') or filtered_analysis.get('profile_summary')
+            
+            # Dodatkowo sprawdzamy czy są dane (żeby nie generować pustego nagłówka w trybie full)
+            if profile_summary and profile_summary not in ("NA", "Nie podano w CV", "not provided", ""):
+                y_right = add_section_header(
+                    pdf, col_right_x, y_right,
+                    get_section_name("P R O F I L E   S U M M A R Y"),
+                    col_right_w,
+                )
+                profile_text = safe_text(profile_summary).replace('•', '').strip()
+                pdf.set_xy(col_right_x + 2, y_right)
+                
+                # Używamy keywords tylko jeśli nie jesteśmy w trybie one_to_one (choć tu akurat if wyżej to załatwia)
+                # keywords dla one_to_one są i tak puste z definicji na początku funkcji
+                currenty = self._write_text_with_underline(
+                    pdf, profile_text, col_right_x + 2, pdf.get_y(),
+                    col_right_w - 4, "Arsenal", 9, keywords, line_height=4
+                )
+                y_right = currenty + 3
 
         # WORK EXPERIENCE (bez żadnego wpływu na lewą kolumnę)
         work_exp_data = filtered_analysis.get("doswiadczenie_zawodowe") or filtered_analysis.get("work_experience", [])
@@ -2818,7 +2825,7 @@ class CVAnalyzer:
                 # Achievements
                 if achievements and isinstance(achievements, list):
                     pdf.set_font('Arsenal', '', 9)
-                    for ach in achievements[:3]:  # ← MAX 3 na pozycję
+                    for ach in achievements:  # ← MAX 3 na pozycję
                         bullet_text = safe_text(ach, '').strip()[:80]  # ← OGRANICZENIE!
                         if bullet_text:
                             pdf.set_xy(col_right_x + 4, y_right)
@@ -3042,7 +3049,7 @@ class CVAnalyzer:
             logo_para.paragraph_format.space_after = Pt(0)
             logo_para.paragraph_format.left_indent = Inches(0.3)
 
-            logo_path = "/app/arsenal/Arsenal-Regular.ttf"# r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #
+            logo_path = "/app/IS_New.png"# r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #
             try:
                 logo_run = logo_para.add_run()
                 logo_run.add_picture(logo_path, width=Inches(2.0))
@@ -3238,64 +3245,97 @@ class CVAnalyzer:
                     apply_arsenal_font(run, size=9, bold=False)
         
         # LANGUAGES WITH UNDERLINE
-        p = left_cell.add_paragraph()
-        p.paragraph_format.space_before = Pt(1)
-        p.paragraph_format.space_after = Pt(0)
-        add_section_header_with_underline(left_cell, get_section_name('L A N G U A G E S'))
-
         languages_data = filtered_analysis.get("jezyki_obce") or filtered_analysis.get("languages", [])
+
+        valid_languages = []
         if languages_data:
             for lang in languages_data:
-                # NAPRAWIONE KLUCZE - sprawdź WSZYSTKIE możliwe nazwy
-                language = safe_text(lang.get('język') or lang.get('jzyk') or lang.get('language') or lang.get('lang') or '')
-                level = safe_text(lang.get('poziom') or lang.get('level') or '')
-                
-                # Pomiń puste
+                language = safe_text(
+                    lang.get('język')
+                    or lang.get('jzyk')
+                    or lang.get('language')
+                    or lang.get('lang')
+                    or ''
+                )
+                level = safe_text(
+                    lang.get('poziom')
+                    or lang.get('level')
+                    or ''
+                )
+
+                # Pomiń puste / śmieciowe wartości
                 if not language or language in ['', 'None', 'N/A', 'not provided']:
                     continue
-                    
-                # Format: "Angielski: C1" lub "English: Advanced"
-                lang_text = f"{language}: {level}".strip()
-                
-                if lang_text and len(lang_text) > 3:
-                    # Użyj _add_paragraph_with_bold_keywords jak w innych sekcjach
-                    self._add_paragraph_with_bold_keywords(
-                        left_cell, 
-                        lang_text, 
-                        keywords, 
-                        base_size=9,
-                        space_before=0,
-                        space_after=0
-                    )
+
+                text = f"{language}: {level}".strip()
+                if text and len(text) > 3:
+                    valid_languages.append(text)
+
+        if valid_languages:
+            p = left_cell.add_paragraph()
+            p.paragraph_format.space_before = Pt(1)
+            p.paragraph_format.space_after = Pt(0)
+
+            add_section_header_with_underline(
+                left_cell,
+                get_section_name('L A N G U A G E S')
+            )
+
+            for lang_text in valid_languages:
+                self._add_paragraph_with_bold_keywords(
+                    left_cell,
+                    lang_text,
+                    keywords,
+                    base_size=9,
+                    space_before=0,
+                    space_after=0
+                )
+
         
         # CERTIFICATIONS WITH UNDERLINE
-        p = left_cell.add_paragraph()
-        p.paragraph_format.space_before = Pt(1)
-        p.paragraph_format.space_after = Pt(0)
-        add_section_header_with_underline(left_cell, get_section_name('C E R T I F I C A T I O N S'))
-        
         certs_and_courses = (
-            filtered_analysis.get("certyfikaty_i_kursy") or 
-            filtered_analysis.get("certifications_and_courses") or
-            (filtered_analysis.get("certyfikaty", []) or []) + (filtered_analysis.get("certifications", []) or [])
+            filtered_analysis.get("certyfikaty_i_kursy")
+            or filtered_analysis.get("certifications_and_courses")
+            or (filtered_analysis.get("certyfikaty", []) or [])
+            +  (filtered_analysis.get("certifications", []) or [])
         )
-        
+
+        valid_certs = []
         if certs_and_courses:
             for item in certs_and_courses:
                 item_name = safe_text(item.get('nazwa') or item.get('name', ''))
                 issuer = safe_text(item.get('wystawca') or item.get('issuer', ''))
-                
+
+                # pomiń wpisy bez nazwy
+                if not item_name or item_name in ['NA', 'Not specified']:
+                    continue
+
+                valid_certs.append((item_name, issuer))
+
+        if valid_certs:
+            p = left_cell.add_paragraph()
+            p.paragraph_format.space_before = Pt(1)
+            p.paragraph_format.space_after = Pt(0)
+
+            add_section_header_with_underline(
+                left_cell,
+                get_section_name('C E R T I F I C A T I O N S')
+            )
+
+            for item_name, issuer in valid_certs:
                 p = left_cell.add_paragraph(item_name)
                 p.paragraph_format.space_before = Pt(0)
                 p.paragraph_format.space_after = Pt(0)
                 for run in p.runs:
                     apply_arsenal_font(run, size=9, bold=True)
-                
-                p = left_cell.add_paragraph(issuer)
-                p.paragraph_format.space_before = Pt(0)
-                p.paragraph_format.space_after = Pt(0)
-                for run in p.runs:
-                    apply_arsenal_font(run, size=9, bold=False)
+
+                if issuer and issuer not in ['Not specified', 'NA']:
+                    p = left_cell.add_paragraph(issuer)
+                    p.paragraph_format.space_before = Pt(0)
+                    p.paragraph_format.space_after = Pt(0)
+                    for run in p.runs:
+                        apply_arsenal_font(run, size=9, bold=False)
+
         
         # ===== RIGHT COLUMN =====
         
@@ -3411,24 +3451,45 @@ class CVAnalyzer:
                         run_tech.font.color.rgb = RGBColor(80, 80, 80)
         
         # EDUCATION WITH UNDERLINE
-        p = right_cell.add_paragraph()
-        p.paragraph_format.space_before = Pt(1)
-        p.paragraph_format.space_after = Pt(0)
-        add_section_header_with_underline(right_cell, get_section_name('E D U C A T I O N'))
-        
         education_data = filtered_analysis.get('wyksztalcenie') or filtered_analysis.get('education', [])
 
-
-
-        if education_data and len(education_data) > 0:
-            
+        valid_education = []
+        if education_data:
             for edu in education_data:
                 institution = safe_text(edu.get('uczelnia') or edu.get('institution'), '')
                 degree = safe_text(edu.get('stopien') or edu.get('degree'), '')
                 field = safe_text(edu.get('kierunek') or edu.get('field_of_study') or edu.get('field'), '')
                 period = safe_text(edu.get('okres') or edu.get('period'), '')
-                
-                # ✅ RENDERUJ TYLKO JEŚLI DANE ISTNIEJĄ (jak w PDF!)
+
+                # Walidacja: jeśli nie ma nic sensownego, pomiń
+                if not any([institution, degree, field, period]) or \
+                all(x in ['', 'None', 'N/A'] for x in [institution, degree, field, period]):
+                    continue
+
+                valid_education.append({
+                    'institution': institution,
+                    'degree': degree,
+                    'field': field,
+                    'period': period
+                })
+
+        if valid_education:
+            p = right_cell.add_paragraph()
+            p.paragraph_format.space_before = Pt(1)
+            p.paragraph_format.space_after = Pt(0)
+            
+            add_section_header_with_underline(
+                right_cell,
+                get_section_name('E D U C A T I O N')
+            )
+
+            for edu in valid_education:
+                period = edu['period']
+                degree = edu['degree']
+                field = edu['field']
+                institution = edu['institution']
+
+                # 1. PERIOD (Renderuj tylko jeśli istnieje)
                 if period and period not in ['', 'None', 'N/A']:
                     p_period = right_cell.add_paragraph()
                     p_period.paragraph_format.space_before = Pt(0)
@@ -3438,14 +3499,14 @@ class CVAnalyzer:
                     run_period.font.color.rgb = RGBColor(100, 100, 100)
 
                 # 2. DEGREE + FIELD (tytuł) - BOLD
-                if degree or field:
-                    degree_field = f"{degree}, {field}" if degree and field else (degree or field)
-                    if degree_field and degree_field not in ['', 'None', 'N/A', ',']:
-                        p_degree = right_cell.add_paragraph()
-                        p_degree.paragraph_format.space_before = Pt(0)
-                        p_degree.paragraph_format.space_after = Pt(0)
-                        run_degree = p_degree.add_run(degree_field)
-                        apply_arsenal_font(run_degree, size=9, bold=True)
+                degree_field_parts = [p for p in [degree, field] if p and p not in ['', 'None', 'N/A']]
+                if degree_field_parts:
+                    degree_field = ", ".join(degree_field_parts)
+                    p_degree = right_cell.add_paragraph()
+                    p_degree.paragraph_format.space_before = Pt(0)
+                    p_degree.paragraph_format.space_after = Pt(0)
+                    run_degree = p_degree.add_run(degree_field)
+                    apply_arsenal_font(run_degree, size=9, bold=True)
 
                 # 3. INSTITUTION (uczelnia) na końcu - zwykły font
                 if institution and institution not in ['', 'None', 'N/A']:
@@ -3454,7 +3515,7 @@ class CVAnalyzer:
                     p_inst.paragraph_format.space_after = Pt(4)  # odstęp po całym wpisie
                     run_inst = p_inst.add_run(institution)
                     apply_arsenal_font(run_inst, size=9, bold=False)
-        
+
         buffer = BytesIO()
         doc.save(buffer)
         buffer.seek(0)
