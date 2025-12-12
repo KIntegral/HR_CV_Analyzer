@@ -28,7 +28,7 @@ from docx.oxml import OxmlElement
 # Dla Windows odkomentuj:
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-logo_path = r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png" #"/app/IS_New.png" #
+logo_path ="/app/IS_New.png" # r"C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png" #
 
 from ollama import Client
 ollama_host = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
@@ -217,7 +217,7 @@ class CVAnalyzer:
             all_text = ""
 
             for page_num, page in enumerate(doc):
-                print(f"📄 OCR: page {page_num + 1}...")
+                # print(f"📄 OCR: page {page_num + 1}...")
 
                 # 3x zoom instead of 2x
                 mat = pymupdf.Matrix(3, 3)
@@ -284,13 +284,13 @@ class CVAnalyzer:
 
             # Jeśli tekst jest praktycznie pusty (<50 znaków), to prawdopodobnie skan - użyj OCR
             if len(text.strip()) < 50:
-                print("⚠️ Detected scanned PDF (no selectable text), using OCR...")
+                # print("⚠️ Detected scanned PDF (no selectable text), using OCR...")
                 return self._extract_text_from_pdf_with_ocr(pdf_content)
 
             return text
 
         except Exception as e:
-            print(f"Error reading PDF: {e}")
+            # print(f"Error reading PDF: {e}")
             # Fallback to OCR
             if 'pdf_content' in locals():
                 return self._extract_text_from_pdf_with_ocr(pdf_content)
@@ -426,10 +426,10 @@ class CVAnalyzer:
                     translated_text = translated_text.strip()
                     
                     translated.append(translated_text)
-                    print(f"✅ Translated: {desc[:50]}... → {translated_text[:50]}...")
+                    # print(f"✅ Translated: {desc[:50]}... → {translated_text[:50]}...")
                     
                 except Exception as e:
-                    print(f"❌ Translation failed for {desc[:50]}... keeping original")
+                    # print(f"❌ Translation failed for {desc[:50]}... keeping original")
                     translated.append(desc)
             
             job['description'] = translated
@@ -452,17 +452,17 @@ class CVAnalyzer:
         else:
             final_language = output_language
 
-        print(f"\n🔍 Analyzing CV (detected: {cv_language}, output: {final_language})")
+        # print(f"\n🔍 Analyzing CV (detected: {cv_language}, output: {final_language})")
 
         # STEP 1: Extract work experience using direct parsing (NO OLLAMA)
         work_experience = self._extract_work_experience_details(cv_text)
 
         # ✅ TŁUMACZENIE OPISÓW PRACY jeśli potrzeba
         if final_language == 'polish' and cv_language == 'english':
-            print("🔄 Translating work descriptions from English to Polish...")
+            # print("🔄 Translating work descriptions from English to Polish...")
             work_experience = self.translate_work_descriptions(work_experience, 'polish')
         elif final_language == 'english' and cv_language == 'polish':
-            print("🔄 Translating work descriptions from Polish to English...")
+            # print("🔄 Translating work descriptions from Polish to English...")
             work_experience = self.translate_work_descriptions(work_experience, 'english')
 
         # STEP 2: Extract education using direct parsing (NO OLLAMA)
@@ -475,13 +475,13 @@ class CVAnalyzer:
         certifications_data = self.extract_certifications(cv_text)
 
         if final_language == 'polish' and cv_language == 'english':
-            print("🔄 Translating language names from English to Polish...")
+            # print("🔄 Translating language names from English to Polish...")
             for lang in languages_data:
                 original = lang.get('language', '')
                 lang['language'] = self.translate_language_name(original, 'polish')
                 
         elif final_language == 'english' and cv_language == 'polish':
-            print("🔄 Translating language names from Polish to English...")
+            # print("🔄 Translating language names from Polish to English...")
             for lang in languages_data:
                 original = lang.get('language', '')
                 lang['language'] = self.translate_language_name(original, 'english')
@@ -557,13 +557,20 @@ class CVAnalyzer:
                 options={'temperature': 0.1, 'num_predict': 300}
             )
             profile_summary = response['message']['content'].strip()
+
+            temp_context = {
+                "skills": categorized_tech,       # Używamy już skategoryzowanych technologii
+                "languages": languages_data,      # Używamy wyekstrahowanych języków
+                "work_experience": work_experience # Używamy wyekstrahowanego doświadczenia
+            }
             key_highlights = self.extract_key_highlights(
                 client_requirements=client_requirements,
-                output_language=final_language
+                filtered_analysis=temp_context,  # ✅ TERAZ PRZEKAZUJEMY DANE
+                output_lang=final_language
             )
             for tech in ['Django', 'Flask', 'FastAPI', 'React', 'Angular', 'Vue']:
                 if tech not in extracted_tech and tech in profile_summary:
-                    print(f"⚠️ Usuwam halucynowaną technologię: {tech}")
+                    # print(f"⚠️ Usuwam halucynowaną technologię: {tech}")
                     profile_summary = profile_summary.replace(tech, '').replace(',,', ',')
         except:
             profile_summary = f"Experienced professional with expertise in {', '.join(extracted_tech[:5])}."
@@ -708,9 +715,9 @@ class CVAnalyzer:
                     "years_of_experience": "10+"
                 },
                 "matching_to_requirements": {
-                    "strengths": ["Strong technical background", "Extensive experience", "Proven track record"],
+                    "strengths": key_highlights if key_highlights else ["Strong technical background", "Extensive experience"], # ✅ UŻYJ WYGENEROWANYCH DANYCH
                     "match_level": "high",
-                    "justification": "Candidate meets all key requirements",
+                    "justification": "Candidate meets key requirements based on analysis",
                     "recommendation": "YES"
                 }
             })
@@ -727,8 +734,8 @@ class CVAnalyzer:
                 for item in analysis["languages"]
             ]
 
-        print(f"🗣️ Languages in analysis: {analysis.get('languages')}")
-        print(f"✅ Analysis complete: {len(work_experience)} jobs, {len(education)} education entries")
+        # print(f"🗣️ Languages in analysis: {analysis.get('languages')}")
+        # print(f"✅ Analysis complete: {len(work_experience)} jobs, {len(education)} education entries")
         return analysis
 
     
@@ -1183,14 +1190,14 @@ class CVAnalyzer:
             match = re.search(pattern, cvtext, re.DOTALL | re.IGNORECASE)
             if match and len(match.group(0).strip()) > 400:
                 section = match.group(0).strip()
-                print(f"💼 Found work section ({len(section)} chars)")
+                # print(f"💼 Found work section ({len(section)} chars)")
                 break
 
         if not section or len(section) < 400:
-            print("⚠️ Work section not found, using full CV for extraction")
+            # print("⚠️ Work section not found, using full CV for extraction")
             section = cvtext
-        else:
-            print(f"💼 Work section extracted: {len(section)} chars")
+        # else:
+            # print(f"💼 Work section extracted: {len(section)} chars")
 
         # print("💼 WORK SECTION (last 1000 chars):")
         # print(section[-1000:])
@@ -1286,8 +1293,8 @@ class CVAnalyzer:
             return []
 
         json_text = responsetext[l:r]
-        print(f"🔍 JSON array ({len(json_text)} chars):")
-        print(json_text[:600])
+        # print(f"🔍 JSON array ({len(json_text)} chars):")
+        # print(json_text[:600])
 
         try:
             items = json.loads(json_text)
@@ -1326,7 +1333,7 @@ class CVAnalyzer:
                     "technologies": tech,
                 })
 
-        print(f"✅ Extracted {len(validjobs)} work experience entries:")
+        # print(f"✅ Extracted {len(validjobs)} work experience entries:")
         # for i, j in enumerate(validjobs, 1):
         #     print(f"  {i}. {j['position']} @ {j['company']} ({j['period']}) - {len(j['description'])} bullets")
 
@@ -1364,11 +1371,11 @@ class CVAnalyzer:
             fragment = remaining[:stop_pos].strip()
             if len(fragment) > 100:
                 all_matches.append(fragment)
-                print(f"🎓 Fragment #{len(all_matches)}: {len(fragment)} chars")
+                # print(f"🎓 Fragment #{len(all_matches)}: {len(fragment)} chars")
 
         if all_matches:
             section = "\n\n=== CONTINUED ===\n\n".join(all_matches)
-            print(f"🎓 Total education: {len(section)} chars from {len(all_matches)} sections")
+            # print(f"🎓 Total education: {len(section)} chars from {len(all_matches)} sections")
         else:
             print("⚠️ No education, using full CV")
             section = cvtext
@@ -1433,16 +1440,16 @@ class CVAnalyzer:
             return []
 
         json_text = raw[l:r]
-        print(f"🔍 JSON array ({len(json_text)} chars):")
-        print(json_text[:500])
+        # print(f"🔍 JSON array ({len(json_text)} chars):")
+        # print(json_text[:500])
 
         try:
             data = json.loads(json_text)
             if not isinstance(data, list):
                 return []
         except Exception as e:
-            print(f"❌ JSON parse error: {e}")
-            print(f"Failed JSON: {json_text[:400]}")
+            # print(f"❌ JSON parse error: {e}")
+            # print(f"Failed JSON: {json_text[:400]}")
             return []
 
         # 5. Normalizacja
@@ -1467,7 +1474,7 @@ class CVAnalyzer:
                     "period": period,
                 })
 
-        print(f"✅ Extracted {len(normalized)} education entries:")
+        # print(f"✅ Extracted {len(normalized)} education entries:")
         # for i, e in enumerate(normalized, 1):
         #     print(f"  {i}. {e['degree']} {e['field']} @ {e['institution']} ({e['period']})")
 
@@ -1776,260 +1783,106 @@ class CVAnalyzer:
             return translated_dict
             
         except Exception as e:
-            print(f"Translation error: {e}")
+            # print(f"Translation error: {e}")
             return analysis_dict  # Return original if translation fails
 
 
-    def extract_key_highlights(self, client_requirements='', output_language='auto'):
+    def extract_key_highlights(self, client_requirements, filtered_analysis, output_lang="english"):
         """
-        Extract 1-2 SHORT bullets matching CV to requirements.
-        ✅ FIXED: Checks SKILLS, LANGUAGES, CERTIFICATIONS, WORK EXPERIENCE, and EDUCATION
+        Generuje Key Highlights, szukając dowodów na spełnienie wymagań klienta
+        GŁÓWNIE w sekcjach: Umiejętności (Skills), Języki (Languages) i Doświadczenie (Experience).
         """
-        if not hasattr(self, '_current_cv_text') or not self._current_cv_text:
-            print("⚠️ No CV text available for highlights")
-            return []
-
         if not client_requirements or not client_requirements.strip():
-            print("⚠️ No client requirements provided")
             return []
 
-        cv_text = self._current_cv_text.lower()
+        # print(f"🔍 Generating Key Highlights based on requirements (Lang: {output_lang})...")
 
-        # Detect output language
-        if output_language == 'auto':
-            req_lower = client_requirements.lower()
-            polish_count = sum(1 for word in ['znajomość', 'doświadczenie', 'umiejętność', 'lat']
-                            if word in req_lower)
-            english_count = sum(1 for word in ['knowledge', 'experience', 'skills', 'years']
-                            if word in req_lower)
-            output_language = 'polish' if polish_count > english_count else 'english'
+        # 1. Przygotuj STRESCZONY kontekst tylko z kluczowych sekcji
+        #    Dzięki temu LLM nie "zgubi się" w mniej ważnych danych.
+        
+        # Pobierz Skills
+        skills_data = filtered_analysis.get("umiejetnosci") or filtered_analysis.get("skills") or {}
+        skills_str = json.dumps(skills_data, ensure_ascii=False, indent=2)
 
-        print(f"🌐 Highlight language: {output_language}")
+        # Pobierz Languages
+        langs_data = filtered_analysis.get("jezyki") or filtered_analysis.get("languages") or []
+        langs_str = json.dumps(langs_data, ensure_ascii=False, indent=2)
 
-        # ✅ CRITICAL: Define spoken languages (NOT programming languages)
-        SPOKEN_LANGUAGES = {
-            'polish': ['polski', 'polish', 'polacco'],
-            'english': ['angielski', 'english', 'inglese'],
-            'german': ['niemiecki', 'german', 'deutsch', 'tedesco'],
-            'russian': ['rosyjski', 'russian', 'русский', 'russo'],
-            'french': ['francuski', 'french', 'français', 'francese'],
-            'spanish': ['hiszpański', 'spanish', 'español', 'spagnolo'],
-            'italian': ['włoski', 'italian', 'italiano'],
-            'chinese': ['chiński', 'chinese', '中文', 'cinese'],
-            'japanese': ['japoński', 'japanese', '日本語', 'giapponese'],
-            'ukrainian': ['ukraiński', 'ukrainian', 'українська'],
-            'portuguese': ['portugalski', 'portuguese', 'português'],
-            'dutch': ['holenderski', 'dutch', 'nederlands'],
-            'swedish': ['szwedzki', 'swedish', 'svenska'],
-            'norwegian': ['norweski', 'norwegian', 'norsk'],
-            'danish': ['duński', 'danish', 'dansk'],
-            'czech': ['czeski', 'czech', 'čeština'],
-            'slovak': ['słowacki', 'slovak', 'slovenčina']
-        }
+        # Pobierz Experience (tylko firmy, stanowiska i opisy)
+        raw_experience = filtered_analysis.get("doswiadczenie") or filtered_analysis.get("work_experience") or []
+        simple_experience = []
+        for job in raw_experience:
+            simple_experience.append({
+                "role": job.get("position", ""),
+                "company": job.get("company", ""),
+                "period": job.get("period", ""),
+                "description": job.get("description", [])
+            })
+        exp_str = json.dumps(simple_experience, ensure_ascii=False, indent=2)
 
-        # ✅ NEW: Define education degree keywords
-        EDUCATION_KEYWORDS = {
-            'polish': {
-                'bachelor': ['inżynier', 'licencjat', 'bachelor'],
-                'master': ['magister', 'magister inżynier', 'master'],
-                'phd': ['doktorat', 'phd', 'dr'],
-                'engineer': ['inżynier', 'inżynierskie', 'engineer']
-            },
-            'english': {
-                'bachelor': ['bachelor', 'bs', 'ba', 'beng'],
-                'master': ['master', 'ms', 'ma', 'msc', 'meng'],
-                'phd': ['phd', 'doctorate', 'doctoral'],
-                'engineer': ['engineer', 'engineering', 'beng', 'meng']
-            }
-        }
+        # Zbuduj kontekst dla LLM
+        structured_context = f"""
+        === SECTION 1: SKILLS ===
+        {skills_str}
 
-        # Parse requirements
-        req_lines = []
-        for line in client_requirements.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            # Remove bullets
-            for marker in ['-', '•', '*', '◦', '○']:
-                if line.startswith(marker):
-                    line = line[len(marker):].strip()
-                    break
-            if line:
-                req_lines.append(line)
+        === SECTION 2: LANGUAGES ===
+        {langs_str}
 
-        if not req_lines:
-            print("⚠️ No valid requirements")
-            return []
+        === SECTION 3: WORK EXPERIENCE ===
+        {exp_str}
+        """
 
-        print(f"📋 Requirements: {len(req_lines)}")
-        for i, req in enumerate(req_lines, 1):
-            print(f"  {i}. {req}")
+        # 2. Skonstruuj prompt wymuszający szukanie w tych sekcjach
+        lang_instruction = "Respond in POLISH." if output_lang == "polish" else "Respond in ENGLISH."
+        
+        prompt = f"""
+        You are an expert technical recruiter evaluating a candidate.
+        
+        TASK:
+        Check if the candidate meets the CLIENT REQUIREMENTS listed below.
+        Search for evidence ONLY in the provided CANDIDATE DATA (Skills, Languages, Experience).
+        
+        CLIENT REQUIREMENTS:
+        "{client_requirements}"
 
-        # Extract highlights
-        import re
-        highlights = []
+        CANDIDATE DATA:
+        {structured_context}
 
-        for req in req_lines:
-            req_lower = req.lower()
+        INSTRUCTIONS:
+        1. Identify up to 6 key matches between the Requirements and the Candidate Data.
+        2. PRIORITIZE matches found in 'Skills' and 'Languages' for hard skills (e.g., Java, Python, English C1).
+        3. Use 'Work Experience' to validate years of experience or specific project usage.
+        4. {lang_instruction}
+        5. Format exactly as a JSON list of strings, e.g., ["Match 1", "Match 2"].
+        6. Each string must be short (max 10-12 words), concise, and punchy.
+        7. If a requirement is NOT met based strictly on the provided sections, IGNORE IT. Do not halllucinate.
+        
+        Return ONLY the JSON list.
+        """
 
-            # ✅ STEP 1: Check if requirement is for SPOKEN LANGUAGE
-            is_spoken_language = False
-            spoken_lang_name = None
-            spoken_lang_variants = []
-
-            for lang_key, variants in SPOKEN_LANGUAGES.items():
-                for variant in variants:
-                    if variant in req_lower:
-                        is_spoken_language = True
-                        spoken_lang_name = lang_key.capitalize()
-                        spoken_lang_variants = variants
-                        break
-                if is_spoken_language:
-                    break
-
-            # If SPOKEN LANGUAGE requirement detected
-            if is_spoken_language:
-                print(f"\n  🗣️ SPOKEN LANGUAGE detected: {spoken_lang_name}")
-                print(f"     Variants to check: {spoken_lang_variants}")
-
-                found_in_cv = False
-                for variant in spoken_lang_variants:
-                    if variant in cv_text:
-                        found_in_cv = True
-                        print(f"     ✅ Found '{variant}' in CV")
-                        break
-
-                if found_in_cv:
-                    if output_language == 'polish':
-                        highlight = f"{spoken_lang_name}: potwierdzony w sekcji języków"
-                    else:
-                        highlight = f"{spoken_lang_name}: confirmed in languages section"
-                    highlights.append(highlight)
-                    print(f"     ✅ HIGHLIGHT ADDED: {highlight}")
-                else:
-                    print(f"     ❌ {spoken_lang_name} NOT FOUND in CV - NO HIGHLIGHT")
-                
-                continue  # ✅ SKIP to next requirement
-
-            # ✅ STEP 2: Check if requirement is for EDUCATION DEGREE
-            is_education_req = False
-            education_type = None
-            education_keywords_to_check = []
-
-            # Check both Polish and English keywords
-            for lang in ['polish', 'english']:
-                for degree_type, keywords in EDUCATION_KEYWORDS[lang].items():
-                    for keyword in keywords:
-                        if keyword in req_lower:
-                            is_education_req = True
-                            education_type = degree_type
-                            education_keywords_to_check = EDUCATION_KEYWORDS['polish'][degree_type] + EDUCATION_KEYWORDS['english'][degree_type]
-                            break
-                    if is_education_req:
-                        break
-                if is_education_req:
-                    break
-
-            # If EDUCATION requirement detected
-            if is_education_req:
-                print(f"\n  🎓 EDUCATION detected: {education_type}")
-                print(f"     Keywords to check: {education_keywords_to_check}")
-
-                found_in_cv = False
-                for keyword in education_keywords_to_check:
-                    if keyword in cv_text:
-                        found_in_cv = True
-                        print(f"     ✅ Found '{keyword}' in CV")
-                        break
-
-                if found_in_cv:
-                    if output_language == 'polish':
-                        degree_names = {
-                            'bachelor': 'Studia Inżynierskie',
-                            'master': 'Studia Magisterskie',
-                            'phd': 'Doktorat',
-                            'engineer': 'Studia Inżynierskie'
-                        }
-                        degree_name = degree_names.get(education_type, education_type.capitalize())
-                        highlight = f"{degree_name}: potwierdzone w CV"
-                    else:
-                        degree_names = {
-                            'bachelor': "Bachelor's degree",
-                            'master': "Master's degree",
-                            'phd': 'PhD',
-                            'engineer': "Engineering degree"
-                        }
-                        degree_name = degree_names.get(education_type, education_type.capitalize())
-                        highlight = f"{degree_name}: confirmed in CV"
-                    
-                    highlights.append(highlight)
-                    print(f"     ✅ HIGHLIGHT ADDED: {highlight}")
-                else:
-                    print(f"     ❌ {education_type.upper()} NOT FOUND in CV - NO HIGHLIGHT")
-                
-                continue  # ✅ SKIP to next requirement
-
-            # ✅ STEP 3: If NOT spoken language or education, treat as TECHNOLOGY/SKILL
-            # Extract technology from requirement
-            tech_patterns = [
-                r'znajomość\s+([A-Z][a-z]*(?:\+\+|#)?)',  # Polish: "Znajomość Python"
-                r'knowledge\s+of\s+([A-Z][A-Za-z0-9+#\.]+)',  # English: "Knowledge of SQL"
-                r'doświadczenie\s+(?:w|z)\s+([A-Z][A-Za-z0-9+#\.]+)',  # Polish: "Doświadczenie w Python"
-                r'experience\s+(?:with|in)\s+([A-Z][A-Za-z0-9+#\.]+)',  # English: "Experience with C++"
-                r'\b([A-Z][A-Za-z0-9+#\.]{2,})\b',  # Any capitalized tech word (Python, SQL, C++)
-            ]
-
-            tech_found = None
-            for pattern in tech_patterns:
-                match = re.search(pattern, req)
-                if match:
-                    tech_found = match.group(1)
-                    break
-
-            if not tech_found:
-                # Fallback: take first capitalized word
-                words = req.split()
-                for word in words:
-                    if len(word) > 2 and word[0].isupper():
-                        tech_found = word.strip('.,;:')
-                        break
-
-            if not tech_found:
-                print(f"     ❌ Could not extract technology from: {req}")
-                continue
-
-            # Check if this TECHNOLOGY exists in CV
-            tech_lower = tech_found.lower()
-
-            # IMPORTANT: Exclude spoken languages from tech matching
-            is_actually_spoken_lang = False
-            for variants in SPOKEN_LANGUAGES.values():
-                if tech_lower in [v.lower() for v in variants]:
-                    is_actually_spoken_lang = True
-                    break
-
-            if is_actually_spoken_lang:
-                print(f"     ⚠️ {tech_found} is a SPOKEN LANGUAGE, not a technology - skipping")
-                continue
-
-            if tech_lower not in cv_text:
-                print(f"     ❌ {tech_found} (tech) NOT FOUND in CV (skipping)")
-                continue
-
-            # Build highlight for TECHNOLOGY
-            if output_language == 'polish':
-                highlight = f"{tech_found}: doświadczenie potwierdzone w CV"
+        try:
+            response = ollama.chat(
+                model=self.model_name,
+                messages=[{'role': 'user', 'content': prompt}],
+                options={'temperature': 0.1} # Bardzo niska temperatura dla faktów
+            )
+            
+            content = response['message']['content'].strip()
+            
+            # Próba wyciągnięcia JSONa
+            match = re.search(r'\[.*\]', content, re.DOTALL)
+            if match:
+                json_str = match.group(0)
+                highlights = json.loads(json_str)
+                return highlights[:6] # Max 6 punktów
             else:
-                highlight = f"{tech_found}: experience confirmed in CV"
+                # print("⚠️ Could not parse JSON from LLM response for highlights")
+                return []
 
-            highlights.append(highlight)
-            print(f"     ✅ {tech_found} (tech) FOUND in CV")
+        except Exception as e:
+            # print(f"❌ Error generating highlights: {e}")
+            return []
 
-        print(f"\n📊 FINAL: {len(highlights)} highlights")
-        for i, h in enumerate(highlights, 1):
-            print(f"  {i}. {h}")
-
-        return highlights
 
 
 
@@ -2068,7 +1921,7 @@ class CVAnalyzer:
                 section = match.group(0).strip()
                 if len(section) > 30:  # Minimum 30 znaków
                     sections.append(section)
-                    print(f"📜 Found cert/course section: {match.group(1)} ({len(section)} chars)")
+                    # print(f"📜 Found cert/course section: {match.group(1)} ({len(section)} chars)")
         
         # 2. Jeśli nie znaleziono sekcji, użyj ostatnich 4000 znaków
         if not sections:
@@ -2077,9 +1930,9 @@ class CVAnalyzer:
         else:
             combined = "\n\n".join(sections)
         
-        print(f"📜 CERTIFICATIONS SECTION sent to LLM (first 500 chars):")
-        print(combined[:500])
-        print("=== END CERTIFICATIONS SECTION ===")
+        # print(f"📜 CERTIFICATIONS SECTION sent to LLM (first 500 chars):")
+        # print(combined[:500])
+        # print("=== END CERTIFICATIONS SECTION ===")
         
         prompt = f"""Extract ALL certifications, courses, training, awards, accomplishments, and achievements from this text.
 
@@ -2122,8 +1975,8 @@ class CVAnalyzer:
                 options={"temperature": 0.0, "num_predict": 1500},
             )
             raw = resp["message"]["content"].strip()
-            print(f"📝 CERTIFICATIONS RAW LLM ({len(raw)} chars):")
-            print(raw[:400])
+            # print(f"📝 CERTIFICATIONS RAW LLM ({len(raw)} chars):")
+            # print(raw[:400])
             
             # Clean JSON
             raw = raw.replace("``````", "").strip()
@@ -2131,11 +1984,11 @@ class CVAnalyzer:
             r = raw.rfind("]") + 1
             
             if l == -1 or r == 0 or r <= l:
-                print("❌ No JSON array for certifications")
+                # print("❌ No JSON array for certifications")
                 return []
             
             json_text = raw[l:r]
-            print(f"🔍 Certifications JSON (first 300 chars): {json_text[:300]}")
+            # print(f"🔍 Certifications JSON (first 300 chars): {json_text[:300]}")
             data = json.loads(json_text)
             
             if not isinstance(data, list):
@@ -2159,14 +2012,14 @@ class CVAnalyzer:
                         "details": details
                     })
             
-            print(f"✅ Extracted {len(normalized)} certifications/courses/awards:")
-            for c in normalized[:5]:  # Pokaż pierwsze 5
-                print(f"  - {c['type'].upper()}: {c['name']} ({c['issuer']}, {c['date']})")
+            # print(f"✅ Extracted {len(normalized)} certifications/courses/awards:")
+            # for c in normalized[:5]:  # Pokaż pierwsze 5
+                # print(f"  - {c['type'].upper()}: {c['name']} ({c['issuer']}, {c['date']})")
             
             return normalized
             
         except Exception as e:
-            print(f"❌ Certifications extraction error: {e}")
+            # print(f"❌ Certifications extraction error: {e}")
             import traceback
             traceback.print_exc()
             return []
@@ -2212,7 +2065,7 @@ class CVAnalyzer:
         ]
         keywords = [kw for kw in keywords if kw not in excluded_words and len(kw) > 2]
         
-        print(f"🎯 Filtered keywords (technologies + years): {keywords}")
+        # print(f"🎯 Filtered keywords (technologies + years): {keywords}")
         return keywords
 
 
@@ -2309,7 +2162,7 @@ class CVAnalyzer:
             match = re.search(pattern, cvtext, re.DOTALL | re.IGNORECASE)
             if match:
                 section = match.group(0).strip()
-                print(f"🗣️ Found languages section ({len(section)} chars)")
+                # print(f"🗣️ Found languages section ({len(section)} chars)")
                 break
         
         # 2. Jeśli nie znaleziono sekcji, użyj ostatnich 3000 znaków (Languages są zwykle na końcu)
@@ -2317,9 +2170,9 @@ class CVAnalyzer:
             print("⚠️ Languages section not found, using last 3000 chars of CV")
             section = cvtext[-3000:]
         
-        print(f"🗣️ LANGUAGES SECTION sent to LLM (first 500 chars):")
-        print(section[:500])
-        print("=== END LANGUAGES SECTION ===")
+        # print(f"🗣️ LANGUAGES SECTION sent to LLM (first 500 chars):")
+        # print(section[:500])
+        # print("=== END LANGUAGES SECTION ===")
         
         prompt = f"""Extract ALL LANGUAGES mentioned in this text with their proficiency levels.
 
@@ -2352,8 +2205,8 @@ class CVAnalyzer:
                 options={"temperature": 0.0, "num_predict": 500},
             )
             raw = resp["message"]["content"].strip()
-            print(f"📝 LANGUAGES RAW LLM ({len(raw)} chars):")
-            print(raw[:300])
+            # print(f"📝 LANGUAGES RAW LLM ({len(raw)} chars):")
+            # print(raw[:300])
             
             # Clean JSON
             raw = raw.replace("``````", "").strip()
@@ -2361,11 +2214,11 @@ class CVAnalyzer:
             r = raw.rfind("]") + 1
             
             if l == -1 or r == 0 or r <= l:
-                print("❌ No JSON array for languages")
+                # print("❌ No JSON array for languages")
                 return []
             
             json_text = raw[l:r]
-            print(f"🔍 Languages JSON: {json_text[:200]}")
+            # print(f"🔍 Languages JSON: {json_text[:200]}")
             data = json.loads(json_text)
             
             if not isinstance(data, list):
@@ -2383,14 +2236,14 @@ class CVAnalyzer:
                         "level": level if level else "Not specified"
                     })
             
-            print(f"✅ Extracted {len(normalized)} languages:")
-            for l in normalized:
-                print(f"  - {l['language']}: {l['level']}")
+            # print(f"✅ Extracted {len(normalized)} languages:")
+            # for l in normalized:
+            #     print(f"  - {l['language']}: {l['level']}")
             
             return normalized
             
         except Exception as e:
-            print(f"❌ Language extraction error: {e}")
+            # print(f"❌ Language extraction error: {e}")
             import traceback
             traceback.print_exc()
             return []
@@ -2487,11 +2340,11 @@ class CVAnalyzer:
             # Weź tylko pierwsze słowo (nazwa języka)
             translated = translated.split()[0].strip('.,!?')
             
-            print(f"Language: {language_name} → {translated}")
+            # print(f"Language: {language_name} → {translated}")
             return translated
             
         except Exception as e:
-            print(f"Language translation failed for {language_name}, keeping original")
+            # print(f"Language translation failed for {language_name}, keeping original")
             return language_name
 
         
@@ -2506,16 +2359,16 @@ class CVAnalyzer:
             language = filtered_analysis.get('output_language', 'en')
         
         # Font paths
-        arsenal_regular = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#"/app/arsenal/Arsenal-Regular.ttf" # 
-        arsenal_bold =r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf' #"/app/arsenal/Arsenal-Bold.ttf" #
+        arsenal_regular ="/app/arsenal/Arsenal-Regular.ttf" #  r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Regular.ttf'#
+        arsenal_bold ="/app/arsenal/Arsenal-Bold.ttf" #r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\arsenal\Arsenal-Bold.ttf' #
         
         if template_mode == 'one_to_one':
             keywords = []
         else:
             keywords = self._extract_keywords_from_requirements(client_requirements)
 
-        print(f"🔍 Extracted {len(keywords)} keywords for highlighting: {keywords[:10]}")
-        print(f"📝 Client requirements: {client_requirements[:100]}...")
+        # print(f"🔍 Extracted {len(keywords)} keywords for highlighting: {keywords[:10]}")
+        # print(f"📝 Client requirements: {client_requirements[:100]}...")
 
         def safe_text(text, default='N/A'):
             if text is None or text == '':
@@ -2587,7 +2440,7 @@ class CVAnalyzer:
             pdf.add_font('Arsenal', 'B', arsenal_bold)
             pdf.set_font('Arsenal', '', 10)
         except Exception as e:
-            print(f"Font error: {e}")
+            # print(f"Font error: {e}")
             pdf.set_font('Helvetica', '', 10)
         
         pdf.set_margins(left=12.7, top=0, right=12.7)
@@ -3189,7 +3042,7 @@ class CVAnalyzer:
             logo_para.paragraph_format.space_after = Pt(0)
             logo_para.paragraph_format.left_indent = Inches(0.3)
 
-            logo_path = r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #"/app/arsenal/Arsenal-Regular.ttf"# 
+            logo_path = "/app/arsenal/Arsenal-Regular.ttf"# r'C:\Users\Kamil Czyżewski\OneDrive - Integral Solutions sp. z o.o\Pulpit\Projects\HR_CV_Analyzer\IS_New.png' #
             try:
                 logo_run = logo_para.add_run()
                 logo_run.add_picture(logo_path, width=Inches(2.0))
